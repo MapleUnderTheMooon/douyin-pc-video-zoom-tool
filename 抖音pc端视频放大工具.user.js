@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      0.0.1
 // @description  抖音PC端竖屏视频放大与实时字幕工具
-// @author       You
+// @author       spl
 // @match        https://www.douyin.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_setValue
@@ -123,7 +123,7 @@
         constructor(videoDetector) {
             this.videoDetector = videoDetector;
             this.currentVideo = null;
-            this.scale = 1.5; // 默认放大倍数
+            this.scale = 1; // 默认放大倍数
             this.enabled = true;
             this.styleId = 'douyin-video-enlarger-style';
             // 拖拽位置
@@ -1000,9 +1000,10 @@
                 if (saved) {
                     const settings = JSON.parse(saved);
                     
-                    if (settings.scale !== undefined) {
-                        this.videoEnlarger.setScale(settings.scale);
-                    }
+                    // 放大倍数不保存，每个页面使用默认值
+                    // if (settings.scale !== undefined) {
+                    //     this.videoEnlarger.setScale(settings.scale);
+                    // }
                     
                     if (settings.enlargementEnabled !== undefined) {
                         this.videoEnlarger.setEnabled(settings.enlargementEnabled);
@@ -1026,7 +1027,8 @@
         saveSettings() {
             try {
                 const settings = {
-                    scale: this.videoEnlarger.getScale(),
+                    // 放大倍数不保存，每个页面使用默认值
+                    // scale: this.videoEnlarger.getScale(),
                     enlargementEnabled: this.videoEnlarger.enabled,
                     subtitleEnabled: this.subtitleDisplay.enabled,
                     panelMinimized: this.isMinimized
