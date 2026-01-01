@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.1.0
-// @description  抖音PC端视频放大与Whisper字幕工具
+// @version      0.0.2
+// @description  抖音PC端竖屏视频放大与实时字幕工具
 // @author       spl
 // @match        https://www.douyin.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
@@ -238,13 +238,6 @@
             const newStyle = this.mergeStyles(currentStyle, {
                 transform: `scale(${this.scale}) translate(${this.translateX}px, ${this.translateY}px)`,
                 transformOrigin: 'center center',
-                transformStyle: 'preserve-3d',
-                backfaceVisibility: 'hidden',
-                imageRendering: 'optimizeQuality',
-                imageRendering: '-webkit-optimize-contrast',
-                imageRendering: '-moz-crisp-edges',
-                imageRendering: '-o-crisp-edges',
-                imageRendering: 'pixelated',
                 transition: this.isDragging ? 'none' : 'transform 0.3s ease',
                 cursor: 'grab'
             });
@@ -463,76 +456,19 @@
         }
     }
 
-    // ==================== 音频提取模块（重构） ====================
-
-    // 音频录制配置
-    const RECORDING_CONFIG = {
-        sampleRate: 16000,        // Whisper推荐采样率
-        channelCount: 1,          // 单声道
-        bufferSize: 4096,         // 缓冲区大小
-        maxBufferDuration: 30000  // 最大缓冲30秒
-    };
-
-    // AudioWorklet 处理器代码（作为Data URL嵌入）
-    const AUDIO_WORKLET_CODE = `
-    class AudioRecorderWorklet extends AudioWorkletProcessor {
-        constructor() {
-            super();
-            this.bufferSize = 4096;
-            this.buffer = new Float32Array(this.bufferSize);
-            this.offset = 0;
-        }
-
-        process(inputs, outputs, parameters) {
-            const input = inputs[0];
-            if (input && input.length > 0) {
-                const channelData = input[0];
-
-                for (let i = 0; i < channelData.length; i++) {
-                    this.buffer[this.offset] = channelData[i];
-                    this.offset++;
-
-                    if (this.offset >= this.bufferSize) {
-                        // 发送缓冲区数据
-                        this.port.postMessage({
-                            type: 'audio-data',
-                            buffer: this.buffer.slice()
-                        });
-                        this.offset = 0;
-                    }
-                }
-            }
-            return true;
-        }
-    }
-
-    AudioRecorderWorklet.prototype.getDescriptor = () => ({
-        audioPreferences: {
-            sampleRate: 16000,
-            channelCount: 1
-        }
-    });
-
-    registerProcessor('audio-recorder-worklet', AudioRecorderWorklet);
-    `;
-
-    // 创建 AudioWorklet 的 Blob URL
-    const workletBlob = new Blob([AUDIO_WORKLET_CODE], { type: 'application/javascript' });
-    const WORKLET_URL = URL.createObjectURL(workletBlob);
-
+    // ==================== 音频提取模块 ====================
     class AudioProcessor {
         constructor(videoDetector) {
             this.videoDetector = videoDetector;
             this.audioContext = null;
             this.audioSource = null;
-            this.analyser = null;
             this.currentVideo = null;
-            this.workletNode = null;
-            this.isWorkletLoaded = false;
+            this.mediaStreamDestination = null;
+            this.mediaStream = null;
         }
 
         // 创建AudioContext
-        async getAudioContext() {
+        createAudioContext() {
             if (this.audioContext) {
                 return this.audioContext;
             }
@@ -544,18 +480,6 @@
                 }
 
                 this.audioContext = new AudioContextClass();
-
-                // 加载 AudioWorklet
-                if (!this.isWorkletLoaded) {
-                    try {
-                        await this.audioContext.audioWorklet.addModule(WORKLET_URL);
-                        this.isWorkletLoaded = true;
-                    } catch (e) {
-                        console.error('Failed to load AudioWorklet:', e);
-                        // AudioWorklet 加载失败，将在 AudioRecorder 中使用降级方案
-                    }
-                }
-
                 return this.audioContext;
             } catch (e) {
                 console.error('Failed to create AudioContext:', e);
@@ -563,14 +487,15 @@
             }
         }
 
-        // 连接视频元素，返回 AnalyserNode 用于 VAD
-        async connectVideo(video) {
+        // 从视频元素获取音频流
+        async getAudioStream(video) {
             if (!video) {
                 return null;
             }
 
             try {
-                const audioContext = await this.getAudioContext();
+                // 创建或获取AudioContext
+                const audioContext = this.createAudioContext();
                 if (!audioContext) {
                     throw new Error('AudioContext not available');
                 }
@@ -590,724 +515,103 @@
                     this.audioSource = null;
                 }
 
-                if (this.analyser) {
-                    try {
-                        this.analyser.disconnect();
-                    } catch (e) {
-                        // 忽略
-                    }
-                    this.analyser = null;
-                }
-
                 // 创建MediaElementAudioSourceNode
                 this.audioSource = audioContext.createMediaElementSource(video);
 
-                // 创建 AnalyserNode 用于 VAD
-                this.analyser = audioContext.createAnalyser();
-                this.analyser.fftSize = 2048;
-                this.analyser.smoothingTimeConstant = 0.8;
-
-                // 连接：音频源 -> AnalyserNode（不连接到 destination，避免回声）
-                this.audioSource.connect(this.analyser);
-
-                return this.analyser;
-            } catch (e) {
-                console.error('Failed to connect video:', e);
-                return null;
-            }
-        }
-
-        // 创建 AudioWorklet 节点用于录音
-        async createWorkletNode() {
-            if (!this.audioContext || !this.isWorkletLoaded) {
-                return null;
-            }
-
-            try {
-                if (this.workletNode) {
-                    return this.workletNode;
+                // 创建MediaStreamDestination用于获取音频流
+                if (!this.mediaStreamDestination) {
+                    this.mediaStreamDestination = audioContext.createMediaStreamDestination();
                 }
 
-                this.workletNode = new AudioWorkletNode(
-                    this.audioContext,
-                    'audio-recorder-worklet',
-                    {
-                        outputChannelCount: [1]
-                    }
-                );
+                // 连接音频源到destination
+                this.audioSource.connect(this.mediaStreamDestination);
+                
+                // 同时连接到destination，避免音频被"吞掉"
+                this.audioSource.connect(audioContext.destination);
 
-                return this.workletNode;
+                // 获取MediaStream
+                this.mediaStream = this.mediaStreamDestination.stream;
+
+                return this.mediaStream;
             } catch (e) {
-                console.error('Failed to create AudioWorkletNode:', e);
+                console.error('Failed to get audio stream:', e);
+                
+                // 降级方案：尝试直接从video元素获取stream（如果支持）
+                try {
+                    if (video.captureStream) {
+                        this.mediaStream = video.captureStream();
+                        return this.mediaStream;
+                    } else if (video.mozCaptureStream) {
+                        this.mediaStream = video.mozCaptureStream();
+                        return this.mediaStream;
+                    }
+                } catch (fallbackError) {
+                    console.error('Fallback audio stream failed:', fallbackError);
+                }
+
                 return null;
             }
         }
 
         // 处理视频变化
-        async handleVideoChange(video) {
+        handleVideoChange(video) {
             this.currentVideo = video;
-
+            
             if (video) {
-                // 等待视频准备好
-                const tryConnect = async () => {
+                // 等待视频开始播放后再获取音频流
+                const tryGetStream = () => {
                     if (video.readyState >= 2) { // HAVE_CURRENT_DATA
-                        await this.connectVideo(video);
+                        this.getAudioStream(video);
                     } else {
-                        video.addEventListener('loadeddata', tryConnect, { once: true });
+                        video.addEventListener('loadeddata', tryGetStream, { once: true });
                     }
                 };
 
                 if (video.paused) {
                     video.addEventListener('play', () => {
-                        setTimeout(tryConnect, 100);
+                        setTimeout(tryGetStream, 100); // 延迟一点确保音频已开始
                     }, { once: true });
                 } else {
-                    await tryConnect();
+                    tryGetStream();
                 }
             } else {
+                // 清理音频资源
                 this.cleanup();
             }
         }
 
+        // 获取当前音频流
+        getCurrentStream() {
+            return this.mediaStream;
+        }
+
         // 清理资源
         cleanup() {
-            if (this.workletNode) {
-                try {
-                    this.workletNode.disconnect();
-                } catch (e) {
-                    // 忽略
-                }
-                this.workletNode = null;
-            }
-
             if (this.audioSource) {
                 try {
                     this.audioSource.disconnect();
                 } catch (e) {
-                    // 忽略
+                    // 忽略错误
                 }
                 this.audioSource = null;
             }
 
-            if (this.analyser) {
-                try {
-                    this.analyser.disconnect();
-                } catch (e) {
-                    // 忽略
-                }
-                this.analyser = null;
+            if (this.mediaStream) {
+                this.mediaStream.getTracks().forEach(track => track.stop());
+                this.mediaStream = null;
             }
-
-            // 不关闭 AudioContext，保持复用
         }
 
         // 初始化
         init() {
+            // 监听视频变化
             this.videoDetector.onVideoChange((video) => {
                 this.handleVideoChange(video);
             });
         }
     }
 
-    // ==================== 音频录制模块（新增） ====================
-    class AudioRecorder {
-        constructor(audioProcessor) {
-            this.audioProcessor = audioProcessor;
-            this.isRecording = false;
-            this.audioBuffers = [];
-            this.startTime = 0;
-            this.currentAudioLevel = 0;
-        }
-
-        // 开始录音
-        async startRecording(analyser) {
-            if (this.isRecording || !analyser) {
-                return;
-            }
-
-            this.isRecording = true;
-            this.audioBuffers = [];
-            this.startTime = Date.now();
-
-            const audioContext = this.audioProcessor.audioContext;
-            if (!audioContext) {
-                console.error('AudioContext not available');
-                return;
-            }
-
-            // 尝试使用 AudioWorklet
-            const workletNode = await this.audioProcessor.createWorkletNode();
-
-            if (workletNode) {
-                // 使用 AudioWorklet 录制
-                this._startWithWorklet(workletNode, analyser);
-            } else {
-                // 降级方案：使用 ScriptProcessor
-                this._startWithScriptProcessor(analyser);
-            }
-        }
-
-        // 使用 AudioWorklet 录制
-        _startWithWorklet(workletNode, analyser) {
-            // 连接：Analyser -> Worklet
-            analyser.connect(workletNode);
-            // Worklet 不连接到 destination，避免回声
-
-            workletNode.port.onmessage = (event) => {
-                if (!this.isRecording) return;
-
-                if (event.data.type === 'audio-data') {
-                    this.audioBuffers.push(event.data.buffer);
-
-                    // 检查缓冲区大小
-                    const duration = this.getBufferDuration();
-                    if (duration > RECORDING_CONFIG.maxBufferDuration) {
-                        console.warn('Buffer exceeded max duration, stopping recording');
-                        this.stopRecording();
-                    }
-                }
-            };
-        }
-
-        // 使用 ScriptProcessor 录制（降级方案）
-        _startWithScriptProcessor(analyser) {
-            const audioContext = this.audioProcessor.audioContext;
-            const bufferSize = RECORDING_CONFIG.bufferSize;
-
-            const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
-
-            processor.onaudioprocess = (e) => {
-                if (!this.isRecording) return;
-
-                const inputData = e.inputBuffer.getChannelData(0);
-                // 复制数据以避免引用被修改
-                this.audioBuffers.push(new Float32Array(inputData));
-
-                // 计算当前音量（RMS）
-                let sum = 0;
-                for (let i = 0; i < inputData.length; i++) {
-                    sum += inputData[i] * inputData[i];
-                }
-                this.currentAudioLevel = Math.sqrt(sum / inputData.length);
-
-                // 检查缓冲区大小
-                const duration = this.getBufferDuration();
-                if (duration > RECORDING_CONFIG.maxBufferDuration) {
-                    console.warn('Buffer exceeded max duration, stopping recording');
-                    this.stopRecording();
-                }
-            };
-
-            // 连接：Analyser -> Processor -> Destination（必须连接才能触发处理）
-            analyser.connect(processor);
-            processor.connect(audioContext.destination);
-
-            this.processor = processor;
-        }
-
-        // 停止录音并返回 WAV Blob
-        async stopRecording() {
-            if (!this.isRecording) {
-                return null;
-            }
-
-            this.isRecording = false;
-
-            // 断开连接
-            if (this.processor) {
-                this.processor.disconnect();
-                this.processor = null;
-            }
-
-            const duration = this.getBufferDuration();
-            if (duration < 100) {
-                // 音频太短，忽略
-                this.clearBuffer();
-                return null;
-            }
-
-            // 编码为 WAV
-            const wavBlob = await this.encodeToWAV(this.audioBuffers, RECORDING_CONFIG.sampleRate);
-
-            // 清理缓冲区
-            this.audioBuffers = [];
-
-            return wavBlob;
-        }
-
-        // 获取当前音量（0-1）
-        getAudioLevel() {
-            return this.currentAudioLevel;
-        }
-
-        // 获取缓冲区时长（毫秒）
-        getBufferDuration() {
-            if (this.audioBuffers.length === 0) {
-                return 0;
-            }
-
-            const totalSamples = this.audioBuffers.reduce((sum, buf) => sum + buf.length, 0);
-            const sampleRate = RECORDING_CONFIG.sampleRate;
-            return (totalSamples / sampleRate) * 1000;
-        }
-
-        // 清空缓冲区
-        clearBuffer() {
-            this.audioBuffers = [];
-            this.currentAudioLevel = 0;
-        }
-
-        // 编码为 WAV 格式
-        async encodeToWAV(audioBuffers, sampleRate) {
-            // 计算总长度
-            const totalLength = audioBuffers.reduce((sum, buf) => sum + buf.length, 0);
-
-            // 合并所有缓冲区
-            const result = new Float32Array(totalLength);
-            let offset = 0;
-            for (const buf of audioBuffers) {
-                result.set(buf, offset);
-                offset += buf.length;
-            }
-
-            // 转换为16位PCM
-            const pcmData = new Int16Array(result.length);
-            for (let i = 0; i < result.length; i++) {
-                // 限制范围并转换为16位整数
-                const sample = Math.max(-1, Math.min(1, result[i]));
-                pcmData[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-            }
-
-            // 创建WAV文件头
-            const header = this._createWAVHeader(pcmData.length * 2, sampleRate);
-            const wavData = new Uint8Array(header.length + pcmData.length * 2);
-
-            wavData.set(header);
-            wavData.set(new Uint8Array(pcmData.buffer), header.length);
-
-            return new Blob([wavData], { type: 'audio/wav' });
-        }
-
-        // 创建 WAV 文件头
-        _createWAVHeader(dataLength, sampleRate) {
-            const header = new ArrayBuffer(44);
-            const view = new DataView(header);
-
-            // RIFF 标识
-            this._writeString(view, 0, 'RIFF');
-            view.setUint32(4, 36 + dataLength, true); // 文件长度
-            this._writeString(view, 8, 'WAVE');
-
-            // fmt 子块
-            this._writeString(view, 12, 'fmt ');
-            view.setUint32(16, 16, true); // fmt 块大小
-            view.setUint16(20, 1, true); // 音频格式（PCM）
-            view.setUint16(22, 1, true); // 声道数
-            view.setUint32(24, sampleRate, true); // 采样率
-            view.setUint32(28, sampleRate * 2, true); // 字节率
-            view.setUint16(32, 2, true); // 块对齐
-            view.setUint16(34, 16, true); // 位深度
-
-            // data 子块
-            this._writeString(view, 36, 'data');
-            view.setUint32(40, dataLength, true); // 数据长度
-
-            return new Uint8Array(header);
-        }
-
-        _writeString(view, offset, string) {
-            for (let i = 0; i < string.length; i++) {
-                view.setUint8(offset + i, string.charCodeAt(i));
-            }
-        }
-    }
-
-    // ==================== 前端VAD模块（新增） ====================
-
-    // VAD 配置
-    const VAD_CONFIG = {
-        silenceThreshold: 0.02,      // 静音阈值（0-1）
-        speechThreshold: 0.05,       // 语音阈值（0-1）
-        minSpeechDuration: 500,      // 最小语音时长（ms）
-        silenceDuration: 1500,       // 静音持续多久后结束（ms）
-        minAudioLength: 1000,        // 最小音频长度（ms）
-        maxAudioLength: 30000        // 最大音频长度（ms）
-    };
-
-    // VAD 状态
-    const VAD_STATES = {
-        IDLE: 'idle',                           // 空闲，等待语音
-        SPEECH_DETECTED: 'speech_detected',     // 检测到语音
-        RECORDING: 'recording',                 // 正在录音
-        SILENCE_DETECTED: 'silence_detected',   // 检测到静音
-        PROCESSING: 'processing'                // 正在处理
-    };
-
-    class FrontendVAD {
-        constructor(audioRecorder, onSpeechEnd) {
-            this.audioRecorder = audioRecorder;
-            this.onSpeechEnd = onSpeechEnd;
-
-            this.state = VAD_STATES.IDLE;
-            this.speechStartTime = 0;
-            this.silenceStartTime = 0;
-        }
-
-        // 启动 VAD
-        start() {
-            this.reset();
-        }
-
-        // 停止 VAD
-        stop() {
-            if (this.state === VAD_STATES.RECORDING || this.state === VAD_STATES.SPEECH_DETECTED) {
-                // 正在录音，强制结束
-                this._finishRecording();
-            }
-            this.reset();
-        }
-
-        // 更新音频状态
-        update(audioLevel) {
-            const now = Date.now();
-
-            switch (this.state) {
-                case VAD_STATES.IDLE:
-                    if (audioLevel > VAD_CONFIG.speechThreshold) {
-                        this.state = VAD_STATES.SPEECH_DETECTED;
-                        this.speechStartTime = now;
-                        this.audioRecorder.startRecording();
-                    }
-                    break;
-
-                case VAD_STATES.SPEECH_DETECTED:
-                    if (audioLevel > VAD_CONFIG.silenceThreshold) {
-                        // 持续语音
-                        if (now - this.speechStartTime > VAD_CONFIG.minSpeechDuration) {
-                            this.state = VAD_STATES.RECORDING;
-                        }
-                    } else {
-                        // 回到静音，重置
-                        this.reset();
-                    }
-                    break;
-
-                case VAD_STATES.RECORDING:
-                    if (audioLevel < VAD_CONFIG.silenceThreshold) {
-                        if (!this.silenceStartTime) {
-                            this.silenceStartTime = now;
-                        }
-
-                        // 静音持续足够久，结束录音
-                        if (now - this.silenceStartTime > VAD_CONFIG.silenceDuration) {
-                            this._finishRecording();
-                        }
-                    } else {
-                        this.silenceStartTime = null;
-                    }
-
-                    // 检查最大时长
-                    const duration = this.audioRecorder.getBufferDuration();
-                    if (duration > VAD_CONFIG.maxAudioLength) {
-                        this._finishRecording();
-                    }
-                    break;
-            }
-        }
-
-        // 完成录音
-        async _finishRecording() {
-            this.state = VAD_STATES.PROCESSING;
-
-            const blob = await this.audioRecorder.stopRecording();
-            const duration = this.audioRecorder.getBufferDuration();
-
-            // 检查最小长度
-            if (duration < VAD_CONFIG.minAudioLength) {
-                this.reset();
-                return;
-            }
-
-            // 触发回调
-            if (this.onSpeechEnd && blob) {
-                this.onSpeechEnd(blob, duration);
-            }
-
-            this.reset();
-        }
-
-        // 重置状态
-        reset() {
-            this.state = VAD_STATES.IDLE;
-            this.speechStartTime = 0;
-            this.silenceStartTime = 0;
-        }
-    }
-
-    // ==================== Whisper客户端模块（新增） ====================
-
-    // Whisper 配置
-    const WHISPER_CONFIG = {
-        endpoint: 'http://localhost:3000/api/transcribe',
-        timeout: 30000,
-        maxRetries: 2,
-        retryDelay: 1000,
-        language: 'zh'
-    };
-
-    class WhisperClient {
-        constructor(config = WHISPER_CONFIG) {
-            this.endpoint = config.endpoint;
-            this.timeout = config.timeout;
-            this.maxRetries = config.maxRetries;
-            this.retryDelay = config.retryDelay;
-            this.language = config.language;
-
-            this.isBusy = false;
-            this.abortController = null;
-            this.busyCallback = null;
-        }
-
-        // 设置忙碌状态回调
-        setBusy(callback) {
-            this.busyCallback = callback;
-        }
-
-        // 通知忙碌状态
-        notifyBusy(isBusy) {
-            if (this.busyCallback) {
-                this.busyCallback(isBusy);
-            }
-        }
-
-        // 语音转文本
-        async transcribe(audioBlob, options = {}) {
-            if (this.isBusy) {
-                console.warn('Transcription in progress, skipping');
-                return null;
-            }
-
-            this.isBusy = true;
-            this.notifyBusy(true);
-
-            const formData = new FormData();
-            formData.append('audio', audioBlob, 'audio.wav');
-            formData.append('language', options.language || this.language);
-            formData.append('task', options.task || 'transcribe');
-
-            let lastError;
-
-            for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-                try {
-                    this.abortController = new AbortController();
-
-                    const timeoutId = setTimeout(() => {
-                        this.abortController.abort();
-                    }, this.timeout);
-
-                    const response = await fetch(this.endpoint, {
-                        method: 'POST',
-                        body: formData,
-                        signal: this.abortController.signal
-                    });
-
-                    clearTimeout(timeoutId);
-
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-
-                    const result = await response.json();
-
-                    this.isBusy = false;
-                    this.notifyBusy(false);
-
-                    if (result.success) {
-                        return {
-                            text: result.text || '',
-                            chunks: result.chunks || [],
-                            language: result.language,
-                            duration: result.duration
-                        };
-                    } else {
-                        throw new Error(result.error || 'Transcription failed');
-                    }
-
-                } catch (error) {
-                    lastError = error;
-
-                    if (error.name === 'AbortError') {
-                        console.error('Transcription timeout');
-                    } else {
-                        console.error(`Transcription attempt ${attempt + 1} failed:`, error);
-                    }
-
-                    if (attempt < this.maxRetries) {
-                        await new Promise(resolve =>
-                            setTimeout(resolve, this.retryDelay * (attempt + 1))
-                        );
-                    }
-                }
-            }
-
-            this.isBusy = false;
-            this.notifyBusy(false);
-
-            throw lastError;
-        }
-
-        // 取消当前请求
-        abort() {
-            if (this.abortController) {
-                this.abortController.abort();
-                this.abortController = null;
-            }
-            this.isBusy = false;
-            this.notifyBusy(false);
-        }
-    }
-
-    // ==================== 字幕控制器模块（新增） ====================
-    class SubtitleController {
-        constructor(videoDetector, audioProcessor, subtitleDisplay) {
-            this.videoDetector = videoDetector;
-            this.audioProcessor = audioProcessor;
-            this.subtitleDisplay = subtitleDisplay;
-
-            this.audioRecorder = new AudioRecorder(audioProcessor);
-            this.vad = new FrontendVAD(this.audioRecorder, this.onSpeechEnd.bind(this));
-            this.whisperClient = new WhisperClient();
-
-            this.enabled = false;
-            this.vadLoopId = null;
-            this.analyser = null;
-
-            // 设置忙碌状态回调
-            this.whisperClient.setBusy((isBusy) => {
-                if (isBusy) {
-                    this.subtitleDisplay.showProcessing();
-                } else {
-                    this.subtitleDisplay.hideProcessing();
-                }
-            });
-        }
-
-        // 启动字幕功能
-        async start() {
-            if (!this.enabled) return;
-
-            const video = this.videoDetector.getCurrentVideo();
-            if (!video) return;
-
-            // 连接音频
-            this.analyser = await this.audioProcessor.connectVideo(video);
-            if (!this.analyser) {
-                console.error('Failed to connect video audio');
-                return;
-            }
-
-            // 启动VAD
-            this.vad.start();
-            this.startVADLoop();
-        }
-
-        // 启动VAD循环
-        startVADLoop() {
-            const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
-
-            const check = () => {
-                if (!this.enabled || !this.analyser) {
-                    return;
-                }
-
-                // 获取音频数据用于VAD
-                this.analyser.getByteFrequencyData(dataArray);
-
-                // 计算平均音量
-                const sum = dataArray.reduce((a, b) => a + b, 0);
-                const average = sum / dataArray.length;
-                const normalizedLevel = average / 255; // 0-1
-
-                // 从 AudioRecorder 获取实时音量（如果使用 ScriptProcessor）
-                const recorderLevel = this.audioRecorder.getAudioLevel();
-                const audioLevel = recorderLevel > 0 ? recorderLevel : normalizedLevel;
-
-                // 更新VAD状态
-                this.vad.update(audioLevel);
-
-                // 继续循环
-                this.vadLoopId = requestAnimationFrame(check);
-            };
-
-            this.vadLoopId = requestAnimationFrame(check);
-        }
-
-        // 停止VAD循环
-        stopVADLoop() {
-            if (this.vadLoopId) {
-                cancelAnimationFrame(this.vadLoopId);
-                this.vadLoopId = null;
-            }
-        }
-
-        // 语音结束回调
-        async onSpeechEnd(audioBlob, duration) {
-            try {
-                console.log(`Transcribing ${duration}ms of audio...`);
-
-                this.subtitleDisplay.showLoading();
-
-                const result = await this.whisperClient.transcribe(audioBlob);
-
-                if (result && result.chunks) {
-                    // 显示字幕
-                    for (const chunk of result.chunks) {
-                        this.subtitleDisplay.updateText(chunk.text, false);
-
-                        // 根据时间戳延迟清除
-                        const chunkDuration = chunk.timestamp[1] - chunk.timestamp[0];
-                        setTimeout(() => {
-                            this.subtitleDisplay.clear();
-                        }, chunkDuration * 1000 + 3000);
-                    }
-                }
-            } catch (error) {
-                console.error('Transcription failed:', error);
-                this.subtitleDisplay.showError('识别失败，请检查后端服务');
-            }
-        }
-
-        // 停止字幕功能
-        stop() {
-            this.enabled = false;
-            this.stopVADLoop();
-            this.vad.stop();
-            this.audioRecorder.clearBuffer();
-            this.whisperClient.abort();
-        }
-
-        // 设置启用状态
-        setEnabled(enabled) {
-            this.enabled = enabled;
-
-            if (enabled) {
-                this.start();
-            } else {
-                this.stop();
-                this.subtitleDisplay.clear();
-            }
-        }
-
-        // 清理资源
-        cleanup() {
-            this.stop();
-            if (this.analyser) {
-                this.analyser = null;
-            }
-        }
-    }
-
-    // ==================== 语音识别模块（待删除） ====================
+    // ==================== 语音识别模块 ====================
     class SpeechRecognizer {
         constructor(audioProcessor) {
             this.audioProcessor = audioProcessor;
@@ -1543,21 +847,16 @@
         }
     }
 
-    // ==================== 字幕显示模块（优化） ====================
+    // ==================== 字幕显示模块 ====================
     class SubtitleDisplay {
-        constructor(videoDetector) {
+        constructor(speechRecognizer, videoDetector) {
+            this.speechRecognizer = speechRecognizer;
             this.videoDetector = videoDetector;
             this.container = null;
             this.subtitleElement = null;
             this.currentText = '';
-            this.enabled = false;
+            this.enabled = false; // 默认关闭，需要用户手动开启
             this.styleId = 'douyin-subtitle-style';
-
-            // RAF 节流优化
-            this.pendingUpdate = null;
-            this.rafId = null;
-            this.hideTimer = null;
-            this.resizeTimer = null;
         }
 
         // 创建字幕容器
@@ -1566,12 +865,15 @@
                 return this.container;
             }
 
+            // 创建样式
             this.injectStyles();
 
+            // 创建容器
             this.container = document.createElement('div');
             this.container.id = 'douyin-subtitle-container';
             this.container.className = 'douyin-subtitle-container';
 
+            // 创建字幕元素
             this.subtitleElement = document.createElement('div');
             this.subtitleElement.className = 'douyin-subtitle-text';
             this.subtitleElement.textContent = '';
@@ -1633,21 +935,6 @@
                 .douyin-subtitle-text.final {
                     opacity: 1;
                 }
-
-                .douyin-subtipn-text.loading::after {
-                    content: '...';
-                    animation: dots 1.5s steps(4, end) infinite;
-                }
-
-                @keyframes dots {
-                    0%, 20% { content: '.'; }
-                    40% { content: '..'; }
-                    60%, 100% { content: '...'; }
-                }
-
-                .douyin-subtitle-text.error {
-                    background: rgba(220, 38, 38, 0.85);
-                }
             `;
             document.head.appendChild(style);
         }
@@ -1658,15 +945,17 @@
                 return;
             }
 
+            // 获取视频在页面中的位置
             const rect = video.getBoundingClientRect();
             const videoBottom = rect.bottom;
             const windowHeight = window.innerHeight;
 
+            // 将字幕放在视频下方，距离视频底部20px
             const bottomPosition = Math.max(80, windowHeight - videoBottom + 20);
             this.container.style.bottom = `${bottomPosition}px`;
         }
 
-        // 更新字幕文本（RAF 节流优化）
+        // 更新字幕文本
         updateText(text, isInterim = false) {
             if (!this.enabled) {
                 return;
@@ -1676,93 +965,29 @@
                 this.createContainer();
             }
 
-            // 合并更新请求
-            this.pendingUpdate = { text, isInterim };
-
-            if (this.rafId) {
+            if (!this.subtitleElement) {
                 return;
             }
-
-            this.rafId = requestAnimationFrame(() => {
-                this._applyUpdate();
-                this.rafId = null;
-            });
-        }
-
-        // 应用更新（内部方法）
-        _applyUpdate() {
-            if (!this.pendingUpdate || !this.subtitleElement) {
-                return;
-            }
-
-            const { text, isInterim } = this.pendingUpdate;
-            this.pendingUpdate = null;
 
             this.currentText = text;
-
+            
             if (text) {
                 this.subtitleElement.textContent = text;
                 this.subtitleElement.className = 'douyin-subtitle-text ' + (isInterim ? 'interim' : 'final');
                 this.container.style.opacity = '1';
-
-                // 同时更新位置
-                const video = this.videoDetector.getCurrentVideo();
-                if (video) {
-                    this._updatePositionSync(video);
-                }
             } else {
-                // 延迟隐藏
-                if (this.hideTimer) {
-                    clearTimeout(this.hideTimer);
-                }
-                this.hideTimer = setTimeout(() => {
-                    if (!this.currentText && this.container) {
+                // 延迟隐藏，避免闪烁
+                setTimeout(() => {
+                    if (!this.currentText) {
                         this.container.style.opacity = '0';
                     }
                 }, 2000);
             }
-        }
 
-        // 同步更新位置（内部方法）
-        _updatePositionSync(video) {
-            if (!this.container || !video) {
-                return;
-            }
-
-            const rect = video.getBoundingClientRect();
-            const videoBottom = rect.bottom;
-            const windowHeight = window.innerHeight;
-            const bottomPosition = Math.max(80, windowHeight - videoBottom + 20);
-            this.container.style.bottom = `${bottomPosition}px`;
-        }
-
-        // 显示加载状态
-        showLoading() {
-            this.updateText('正在识别', true);
-            if (this.subtitleElement) {
-                this.subtitleElement.classList.add('loading');
-            }
-        }
-
-        // 显示处理状态
-        showProcessing() {
-            if (this.subtitleElement) {
-                this.subtitleElement.classList.add('loading');
-            }
-        }
-
-        // 隐藏处理状态
-        hideProcessing() {
-            if (this.subtitleElement) {
-                this.subtitleElement.classList.remove('loading');
-            }
-        }
-
-        // 显示错误
-        showError(message) {
-            this.updateText(message, false);
-            if (this.subtitleElement) {
-                this.subtitleElement.classList.add('error');
+            // 更新位置
+            const video = this.videoDetector.getCurrentVideo();
+            if (video) {
+                this.updatePosition(video);
             }
         }
 
@@ -1771,9 +996,6 @@
             this.currentText = '';
             if (this.subtitleElement) {
                 this.subtitleElement.textContent = '';
-                this.subtitleElement.classList.remove('loading', 'error');
-            }
-            if (this.container) {
                 this.container.style.opacity = '0';
             }
         }
@@ -1790,45 +1012,43 @@
 
         // 初始化
         init() {
+            // 创建容器
             this.createContainer();
 
-            // 监听窗口大小变化（节流）
-            window.addEventListener('resize', () => {
-                if (this.resizeTimer) {
-                    clearTimeout(this.resizeTimer);
-                }
-                this.resizeTimer = setTimeout(() => {
-                    const video = this.videoDetector.getCurrentVideo();
-                    if (video) {
-                        this.updatePosition(video);
+            // 监听语音识别结果
+            this.speechRecognizer.onResult((event, data) => {
+                if (event === 'result' && data) {
+                    // 优先显示最终结果，否则显示临时结果
+                    const text = data.final || data.interim;
+                    this.updateText(text, !data.isFinal);
+                } else if (event === 'error' && data) {
+                    // 显示错误信息（可选）
+                    if (data.type === 'permission') {
+                        this.updateText('需要麦克风权限', false);
                     }
-                }, 100);
+                } else if (event === 'start') {
+                    this.updateText('正在识别...', true);
+                } else if (event === 'end') {
+                    // 识别结束，保持最后的结果
+                }
             });
-        }
 
-        // 清理资源
-        cleanup() {
-            if (this.rafId) {
-                cancelAnimationFrame(this.rafId);
-                this.rafId = null;
-            }
-            if (this.hideTimer) {
-                clearTimeout(this.hideTimer);
-                this.hideTimer = null;
-            }
-            if (this.resizeTimer) {
-                clearTimeout(this.resizeTimer);
-                this.resizeTimer = null;
-            }
+            // 监听窗口大小变化，更新位置
+            window.addEventListener('resize', () => {
+                const video = this.videoDetector.getCurrentVideo();
+                if (video) {
+                    this.updatePosition(video);
+                }
+            });
         }
     }
 
     // ==================== 控制面板模块 ====================
     class ControlPanel {
-        constructor(videoEnlarger, subtitleDisplay, subtitleController) {
+        constructor(videoEnlarger, subtitleDisplay, speechRecognizer) {
             this.videoEnlarger = videoEnlarger;
             this.subtitleDisplay = subtitleDisplay;
-            this.subtitleController = subtitleController;
+            this.speechRecognizer = speechRecognizer;
             this.panel = null;
             this.toggleButton = null;
             this.isVisible = false; // 默认隐藏面板
@@ -1842,21 +1062,21 @@
                 const saved = localStorage.getItem(this.storageKey);
                 if (saved) {
                     const settings = JSON.parse(saved);
-
+                    
                     // 放大倍数不保存，每个页面使用默认值
                     // if (settings.scale !== undefined) {
                     //     this.videoEnlarger.setScale(settings.scale);
                     // }
-
+                    
                     if (settings.enlargementEnabled !== undefined) {
                         this.videoEnlarger.setEnabled(settings.enlargementEnabled);
                     }
-
+                    
                     if (settings.subtitleEnabled !== undefined) {
                         this.subtitleDisplay.setEnabled(settings.subtitleEnabled);
-                        this.subtitleController.setEnabled(settings.subtitleEnabled);
+                        this.speechRecognizer.setEnabled(settings.subtitleEnabled);
                     }
-
+                    
                     if (settings.panelMinimized !== undefined) {
                         this.isMinimized = settings.panelMinimized;
                     }
@@ -1873,7 +1093,7 @@
                     // 放大倍数不保存，每个页面使用默认值
                     // scale: this.videoEnlarger.getScale(),
                     enlargementEnabled: this.videoEnlarger.enabled,
-                    subtitleEnabled: this.subtitleController.enabled,
+                    subtitleEnabled: this.subtitleDisplay.enabled,
                     panelMinimized: this.isMinimized
                 };
                 localStorage.setItem(this.storageKey, JSON.stringify(settings));
@@ -2002,17 +1222,17 @@
             style.textContent = `
                 /* 圆形按钮样式 */
                 .douyin-toggle-button {
-                    position: fixed !important;
-                    top: 20px !important;
-                    right: 20px !important;
-                    width: 50px !important;
-                    height: 50px !important;
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    width: 50px;
+                    height: 50px;
                     border-radius: 50%;
-                    background: rgba(24, 144, 255, 0.95) !important;
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 0 0 2px rgba(255, 255, 255, 0.5) !important;
-                    z-index: 2147483647 !important;
+                    background: rgba(24, 144, 255, 0.9);
+                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                    z-index: 100001;
                     cursor: pointer;
-                    display: flex !important;
+                    display: flex;
                     align-items: center;
                     justify-content: center;
                     transition: all 0.3s ease;
@@ -2021,15 +1241,15 @@
                 }
 
                 .douyin-toggle-button:hover {
-                    width: 140px !important;
-                    border-radius: 25px !important;
-                    background: rgba(24, 144, 255, 1) !important;
-                    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3), 0 0 0 2px rgba(255, 255, 255, 0.6) !important;
+                    width: 120px;
+                    border-radius: 25px;
+                    background: rgba(24, 144, 255, 1);
+                    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
                 }
 
                 .douyin-toggle-icon {
-                    font-size: 28px !important;
-                    color: white !important;
+                    font-size: 24px;
+                    color: white;
                     transition: all 0.3s ease;
                     white-space: nowrap;
                 }
@@ -2060,7 +1280,7 @@
                     background: rgba(255, 255, 255, 0.95);
                     border-radius: 12px;
                     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-                    z-index: 2147483647 !important;
+                    z-index: 100000;
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                     font-size: 14px;
                     transition: all 0.3s ease;
@@ -2217,7 +1437,7 @@
             subtitleToggle.addEventListener('change', (e) => {
                 const enabled = e.target.checked;
                 this.subtitleDisplay.setEnabled(enabled);
-                this.subtitleController.setEnabled(enabled);
+                this.speechRecognizer.setEnabled(enabled);
                 this.saveSettings();
             });
 
@@ -2276,9 +1496,6 @@
             // 加载设置
             this.loadSettings();
 
-            // 先注入样式，确保按钮创建时就能应用样式
-            this.injectStyles();
-
             // 创建圆形按钮
             this.createToggleButton();
 
@@ -2300,10 +1517,10 @@
 
     // ==================== 页面适配模块 ====================
     class PageAdapter {
-        constructor(videoDetector, audioProcessor, subtitleController) {
+        constructor(videoDetector, audioProcessor, speechRecognizer) {
             this.videoDetector = videoDetector;
             this.audioProcessor = audioProcessor;
-            this.subtitleController = subtitleController;
+            this.speechRecognizer = speechRecognizer;
             this.currentUrl = window.location.href;
             this.isLivePage = false;
             this.audioStabilityCheckInterval = null;
@@ -2350,20 +1567,38 @@
             }
         }
 
-        // 开始音频稳定性检查（用于直播场景）- 新架构简化版
+        // 开始音频稳定性检查（用于直播场景）
         startAudioStabilityCheck() {
             if (this.audioStabilityCheckInterval) {
                 return;
             }
 
             this.audioStabilityCheckInterval = setInterval(() => {
+                const stream = this.audioProcessor.getCurrentStream();
                 const video = this.videoDetector.getCurrentVideo();
-
+                
                 if (video && !video.paused) {
-                    // 新架构：如果字幕功能已启用但音频未连接，尝试重新连接
-                    if (this.subtitleController.enabled && !this.subtitleController.analyser) {
-                        console.log('Audio connection lost, attempting to reconnect...');
+                    // 检查音频流是否存在
+                    if (!stream || stream.getAudioTracks().length === 0) {
+                        // 音频流丢失，尝试重新获取
+                        console.log('Audio stream lost, attempting to reconnect...');
                         this.audioProcessor.handleVideoChange(video);
+                    } else {
+                        // 检查音频轨道是否活跃
+                        const audioTrack = stream.getAudioTracks()[0];
+                        if (audioTrack && audioTrack.readyState === 'ended') {
+                            console.log('Audio track ended, attempting to reconnect...');
+                            this.audioProcessor.handleVideoChange(video);
+                        }
+                    }
+
+                    // 如果语音识别已启用但未运行，尝试重启
+                    if (this.speechRecognizer.enabled && !this.speechRecognizer.isRecognizing) {
+                        setTimeout(() => {
+                            if (this.speechRecognizer.enabled && stream) {
+                                this.speechRecognizer.start();
+                            }
+                        }, 1000);
                     }
                 }
             }, 3000); // 每3秒检查一次
@@ -2432,31 +1667,32 @@
 
     // 初始化视频检测器
     const videoDetector = new VideoDetector();
-
+    
     // 初始化视频放大器
     const videoEnlarger = new VideoEnlarger(videoDetector);
-
-    // 初始化音频处理器（重构版）
+    
+    // 初始化音频处理器
     const audioProcessor = new AudioProcessor(videoDetector);
-
-    // 初始化字幕显示（优化版）
-    const subtitleDisplay = new SubtitleDisplay(videoDetector);
-
-    // 初始化字幕控制器（新增，替代 SpeechRecognizer）
-    const subtitleController = new SubtitleController(videoDetector, audioProcessor, subtitleDisplay);
-
+    
+    // 初始化语音识别器
+    const speechRecognizer = new SpeechRecognizer(audioProcessor);
+    
+    // 初始化字幕显示
+    const subtitleDisplay = new SubtitleDisplay(speechRecognizer, videoDetector);
+    
     // 初始化控制面板
-    const controlPanel = new ControlPanel(videoEnlarger, subtitleDisplay, subtitleController);
-
+    const controlPanel = new ControlPanel(videoEnlarger, subtitleDisplay, speechRecognizer);
+    
     // 初始化页面适配器
-    const pageAdapter = new PageAdapter(videoDetector, audioProcessor, subtitleController);
-
+    const pageAdapter = new PageAdapter(videoDetector, audioProcessor, speechRecognizer);
+    
     // 等待DOM加载完成后开始监听
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
             videoDetector.startObserving();
             videoEnlarger.init();
             audioProcessor.init();
+            speechRecognizer.init();
             subtitleDisplay.init();
             controlPanel.init();
             pageAdapter.init();
@@ -2465,6 +1701,7 @@
         videoDetector.startObserving();
         videoEnlarger.init();
         audioProcessor.init();
+        speechRecognizer.init();
         subtitleDisplay.init();
         controlPanel.init();
         pageAdapter.init();
