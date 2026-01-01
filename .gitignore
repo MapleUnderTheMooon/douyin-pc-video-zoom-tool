@@ -1,0 +1,20 @@
+# 忽略Trae IDE相关文件
+.trae/
+
+# 忽略日志文件
+*.log
+
+# 忽略临时文件
+*.tmp
+*.temp
+
+# 忽略操作系统相关文件
+.DS_Store
+Thumbs.db
+
+# 忽略编辑器配置文件
+.vscode/
+.idea/
+
+# 忽略依赖目录
+node_modules/
