@@ -74,8 +74,19 @@
             this.checkVideo();
 
             // 使用MutationObserver监听DOM变化
-            this.observer = new MutationObserver(() => {
-                this.checkVideo();
+            this.observer = new MutationObserver((mutations) => {
+                // 过滤掉不重要的mutations，只处理可能影响视频元素的变化
+                const hasRelevantChange = mutations.some(mutation => {
+                    // 检查是否有新增或移除的节点
+                    if (mutation.type === 'childList') {
+                        return mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0;
+                    }
+                    return false;
+                });
+                
+                if (hasRelevantChange) {
+                    this.checkVideo();
+                }
             });
 
             // 尝试找到视频容器，缩小监听范围
@@ -83,10 +94,10 @@
                                   document.querySelector('[data-e2e="videos-container"]') ||
                                   document.body;
 
-            // 监听视频容器的变化
+            // 监听视频容器的变化，减少监听配置
             this.observer.observe(videoContainer, {
                 childList: true,
-                subtree: true,
+                subtree: false, // 不监听子树，减少回调次数
                 attributes: false
             });
 
@@ -98,10 +109,10 @@
             };
             document.addEventListener('play', this._playHandler, true);
 
-            // 保存定时器引用
+            // 保存定时器引用，延长检查间隔，减少不必要的检查
             this._checkTimer = setInterval(() => {
                 this.checkVideo();
-            }, 1000);
+            }, 3000); // 从1000ms延长到3000ms
         }
 
         // 检查视频变化
@@ -166,6 +177,11 @@
                 this.currentVideo.removeEventListener('pause', this._pauseHandler);
             }
 
+            // 只在视频为竖屏时设置样式保护器
+            if (!this.videoDetector.isPortraitVideo(video)) {
+                return;
+            }
+
             // 创建新的 MutationObserver 监听 style 属性变化
             this.styleProtector = new MutationObserver((mutations) => {
                 mutations.forEach((mutation) => {
@@ -178,14 +194,17 @@
                         // 检查 transform 是否被清除或修改
                         const currentTransform = video.style.transform;
                         if (!currentTransform || !currentTransform.includes(`scale(${this.scale})`)) {
-                            // 使用 requestAnimationFrame 确保在抖音的修改后重新应用
-                            this._isApplyingStyle = true;
-                            requestAnimationFrame(() => {
-                                if (this.enabled && video === this.currentVideo) {
-                                    this.applyEnlargement(video);
-                                }
-                                this._isApplyingStyle = false;
-                            });
+                            // 使用 requestAnimationFrame 确保在抖音的修改后重新应用，添加节流
+                            if (!this._styleUpdateFrameId) {
+                                this._styleUpdateFrameId = requestAnimationFrame(() => {
+                                    if (this.enabled && video === this.currentVideo) {
+                                        this._isApplyingStyle = true;
+                                        this.applyEnlargement(video);
+                                        this._isApplyingStyle = false;
+                                    }
+                                    this._styleUpdateFrameId = null;
+                                });
+                            }
                         }
                     }
                 });
@@ -197,14 +216,18 @@
                 attributeFilter: ['style']
             });
 
-            // 监听 pause 事件，暂停时保持放大效果
-            this._pauseHandler = () => {
-                requestAnimationFrame(() => {
-                    if (this.enabled && video === this.currentVideo) {
-                        this.applyEnlargement(video);
-                    }
-                });
-            };
+            // 只添加一次 pause 事件监听器
+            if (!this._pauseHandler) {
+                // 监听 pause 事件，暂停时保持放大效果
+                this._pauseHandler = () => {
+                    // 使用 requestAnimationFrame 确保在抖音的修改后重新应用
+                    requestAnimationFrame(() => {
+                        if (this.enabled && video === this.currentVideo) {
+                            this.applyEnlargement(video);
+                        }
+                    });
+                };
+            }
             video.addEventListener('pause', this._pauseHandler);
         }
 
@@ -302,6 +325,12 @@
             this.translateY = 0;
             this.isDragging = false;
 
+            // 清理拖拽动画帧
+            if (this._dragFrameId) {
+                cancelAnimationFrame(this._dragFrameId);
+                this._dragFrameId = null;
+            }
+
             // 恢复原始样式
             const originalStyle = video.getAttribute('data-original-style');
             if (originalStyle !== null) {
@@ -316,6 +345,43 @@
                     .replace(/cursor\s*:\s*[^;]+;?/gi, '')
                     .trim();
                 video.setAttribute('style', newStyle || '');
+            }
+        }
+        
+        // 清理资源，防止内存泄漏
+        cleanup() {
+            // 清理样式保护器
+            if (this.styleProtector) {
+                this.styleProtector.disconnect();
+                this.styleProtector = null;
+            }
+            
+            // 清理 pause 事件监听器
+            if (this._pauseHandler && this.currentVideo) {
+                this.currentVideo.removeEventListener('pause', this._pauseHandler);
+                this._pauseHandler = null;
+            }
+            
+            // 清理全局事件监听器
+            if (this._globalMouseMoveHandler) {
+                document.removeEventListener('mousemove', this._globalMouseMoveHandler);
+                this._globalMouseMoveHandler = null;
+            }
+            
+            if (this._globalMouseUpHandler) {
+                document.removeEventListener('mouseup', this._globalMouseUpHandler);
+                this._globalMouseUpHandler = null;
+            }
+            
+            // 清理动画帧
+            if (this._dragFrameId) {
+                cancelAnimationFrame(this._dragFrameId);
+                this._dragFrameId = null;
+            }
+            
+            if (this._styleUpdateFrameId) {
+                cancelAnimationFrame(this._styleUpdateFrameId);
+                this._styleUpdateFrameId = null;
             }
         }
 
@@ -349,7 +415,6 @@
             }
 
             // 移除旧的事件监听器（如果存在）
-            const newVideo = video.cloneNode(false);
             if (video.onmousedown) {
                 video.onmousedown = null;
             }
@@ -378,61 +443,64 @@
                 e.stopPropagation();
             });
 
-            // 鼠标移动
-            const handleMouseMove = (e) => {
-                if (!this.isDragging) {
-                    return;
-                }
+            // 只添加一次全局事件监听器
+            if (!this._globalMouseMoveHandler) {
+                // 鼠标移动
+                this._globalMouseMoveHandler = (e) => {
+                    if (!this.isDragging || !this.currentVideo) {
+                        return;
+                    }
 
-                // 使用 requestAnimationFrame 节流，避免频繁 DOM 操作
-                if (this._dragFrameId) {
-                    return;
-                }
+                    // 使用 requestAnimationFrame 节流，避免频繁 DOM 操作
+                    if (this._dragFrameId) {
+                        return;
+                    }
 
-                this._dragFrameId = requestAnimationFrame(() => {
-                    // 计算新的位置
-                    this.translateX = e.clientX - this.dragStartX;
-                    this.translateY = e.clientY - this.dragStartY;
+                    this._dragFrameId = requestAnimationFrame(() => {
+                        // 计算新的位置
+                        this.translateX = e.clientX - this.dragStartX;
+                        this.translateY = e.clientY - this.dragStartY;
 
-                    // 限制拖拽范围（可选，避免拖得太远）
-                    const maxOffset = 200;
-                    this.translateX = Math.max(-maxOffset, Math.min(maxOffset, this.translateX));
-                    this.translateY = Math.max(-maxOffset, Math.min(maxOffset, this.translateY));
+                        // 限制拖拽范围（可选，避免拖得太远）
+                        const maxOffset = 200;
+                        this.translateX = Math.max(-maxOffset, Math.min(maxOffset, this.translateX));
+                        this.translateY = Math.max(-maxOffset, Math.min(maxOffset, this.translateY));
 
-                    // 更新transform
-                    const currentStyle = video.getAttribute('style') || '';
-                    const newStyle = this.mergeStyles(currentStyle, {
-                        transform: `scale(${this.scale}) translate(${this.translateX}px, ${this.translateY}px)`
+                        // 更新transform
+                        const currentStyle = this.currentVideo.getAttribute('style') || '';
+                        const newStyle = this.mergeStyles(currentStyle, {
+                            transform: `scale(${this.scale}) translate(${this.translateX}px, ${this.translateY}px)`
+                        });
+                        this.currentVideo.setAttribute('style', newStyle);
+
+                        this._dragFrameId = null;
                     });
-                    video.setAttribute('style', newStyle);
 
-                    this._dragFrameId = null;
-                });
+                    e.preventDefault();
+                };
+                document.addEventListener('mousemove', this._globalMouseMoveHandler);
+            }
 
-                e.preventDefault();
-            };
+            if (!this._globalMouseUpHandler) {
+                // 鼠标释放
+                this._globalMouseUpHandler = () => {
+                    if (!this.isDragging || !this.currentVideo) {
+                        return;
+                    }
 
-            // 鼠标释放
-            const handleMouseUp = () => {
-                if (!this.isDragging) {
-                    return;
-                }
+                    this.isDragging = false;
 
-                this.isDragging = false;
+                    // 清理拖拽动画帧
+                    if (this._dragFrameId) {
+                        cancelAnimationFrame(this._dragFrameId);
+                        this._dragFrameId = null;
+                    }
 
-                // 清理拖拽动画帧
-                if (this._dragFrameId) {
-                    cancelAnimationFrame(this._dragFrameId);
-                    this._dragFrameId = null;
-                }
-
-                video.style.cursor = 'grab';
-                video.style.transition = 'transform 0.3s ease';
-            };
-
-            // 绑定全局事件
-            document.addEventListener('mousemove', handleMouseMove);
-            document.addEventListener('mouseup', handleMouseUp);
+                    this.currentVideo.style.cursor = 'grab';
+                    this.currentVideo.style.transition = 'transform 0.3s ease';
+                };
+                document.addEventListener('mouseup', this._globalMouseUpHandler);
+            }
 
             // 鼠标悬停时显示手形
             video.addEventListener('mouseenter', () => {
@@ -1003,16 +1071,15 @@
 
             if (this.isVisible) {
                 this.panel.classList.remove('hidden');
-                // 延迟添加监听器，避免当前点击事件触发它
-                setTimeout(() => {
-                    document.addEventListener('click', this.handleOutsideClick);
-                    this.isToggling = false;
-                }, 100);
+                // 直接添加监听器，handleOutsideClick方法已经有排除逻辑
+                document.addEventListener('click', this.handleOutsideClick);
             } else {
                 this.panel.classList.add('hidden');
                 document.removeEventListener('click', this.handleOutsideClick);
-                this.isToggling = false;
             }
+            
+            // 立即重置标志位
+            this.isToggling = false;
         }
 
         // 点击外部隐藏面板
@@ -1133,31 +1200,75 @@
                 }, 500);
             }
         }
+        
+        // 清理资源，防止内存泄漏
+        cleanup() {
+            // 清除定时器
+            if (this._urlCheckTimer) {
+                clearInterval(this._urlCheckTimer);
+                this._urlCheckTimer = null;
+            }
+            
+            // 移除事件监听器
+            if (this._popstateHandler) {
+                window.removeEventListener('popstate', this._popstateHandler);
+                this._popstateHandler = null;
+            }
+        }
 
         // 监听URL变化（SPA路由切换）
         watchUrlChanges() {
-            // 使用MutationObserver监听DOM变化（可能包含路由切换）
-            const urlObserver = new MutationObserver(() => {
+            // 使用防抖函数，减少频繁触发
+            this._debouncedHandleRouteChange = this.debounce(() => {
                 this.handleRouteChange();
+            }, 500);
+
+            // 使用MutationObserver监听DOM变化（可能包含路由切换）
+            const urlObserver = new MutationObserver((mutations) => {
+                // 过滤掉不重要的mutations，只处理可能影响路由的变化
+                const hasRelevantChange = mutations.some(mutation => {
+                    // 检查是否有新增或移除的节点，或者属性变化
+                    return mutation.type === 'childList' || 
+                           (mutation.type === 'attributes' && 
+                            mutation.target.tagName === 'A' && 
+                            mutation.attributeName === 'href');
+                });
+                
+                if (hasRelevantChange) {
+                    this._debouncedHandleRouteChange();
+                }
             });
 
-            // 监听body的变化
+            // 监听body的变化，减少监听配置
             if (document.body) {
                 urlObserver.observe(document.body, {
                     childList: true,
-                    subtree: true
+                    subtree: false, // 不监听子树，减少回调次数
+                    attributes: true,
+                    attributeFilter: ['href'],
+                    attributeOldValue: false
                 });
             }
 
             // 使用popstate监听浏览器前进后退
-            window.addEventListener('popstate', () => {
-                this.handleRouteChange();
-            });
+            this._popstateHandler = () => {
+                this._debouncedHandleRouteChange();
+            };
+            window.addEventListener('popstate', this._popstateHandler);
 
-            // 定期检查URL变化（处理pushState/replaceState）
-            setInterval(() => {
+            // 定期检查URL变化（处理pushState/replaceState），延长检查间隔
+            this._urlCheckTimer = setInterval(() => {
                 this.handleRouteChange();
-            }, 1000);
+            }, 5000); // 从1000ms延长到5000ms
+        }
+        
+        // 防抖函数
+        debounce(func, delay) {
+            let timeoutId;
+            return function(...args) {
+                clearTimeout(timeoutId);
+                timeoutId = setTimeout(() => func.apply(this, args), delay);
+            };
         }
 
         // 初始化
