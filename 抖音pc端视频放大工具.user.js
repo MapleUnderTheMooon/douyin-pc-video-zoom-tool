@@ -2,7 +2,7 @@
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
 // @version      0.0.2
-// @description  抖音PC端竖屏视频放大工具
+// @description  抖音PC端视频放大工具（支持所有视频）
 // @author       spl
 // @match        https://www.douyin.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
@@ -215,12 +215,6 @@
                 return;
             }
 
-            // 只对竖屏视频进行放大
-            if (!this.videoDetector.isPortraitVideo(video)) {
-                this.removeEnlargement(video);
-                return;
-            }
-
             // 确保视频容器存在
             let container = video.parentElement;
             if (!container) {
@@ -344,7 +338,7 @@
                 }
 
                 // 如果视频没有放大，不启用拖拽
-                if (!this.enabled || !this.videoDetector.isPortraitVideo(video)) {
+                if (!this.enabled) {
                     return;
                 }
 
@@ -402,7 +396,7 @@
 
             // 鼠标悬停时显示手形
             video.addEventListener('mouseenter', () => {
-                if (this.enabled && this.videoDetector.isPortraitVideo(video)) {
+                if (this.enabled) {
                     video.style.cursor = 'grab';
                 }
             });
@@ -471,7 +465,7 @@
             this.buttonDragStartY = 0;
             this.buttonStartLeft = 0;
             this.buttonStartTop = 0;
-            this.isButtonVisible = true; // 按钮是否可见
+            this.isButtonVisible = false; // 按钮是否可见（默认隐藏）
             this.isToggling = false; // 防止重复触发标志位
             this.isManualMode = false; // 手动模式：用户按F键后不再自动判断
         }
@@ -1001,10 +995,6 @@
 
             if (this.isButtonVisible) {
                 this.toggleButton.style.display = 'flex';
-                // 显示时检查边缘收缩
-                setTimeout(() => {
-                    this.checkEdgeShrink();
-                }, 100);
             } else {
                 this.toggleButton.style.display = 'none';
                 // 隐藏按钮时也隐藏面板
@@ -1015,38 +1005,8 @@
 
         // 根据页面场景自动调整按钮可见性
         autoAdjustButtonVisibility() {
-            // 如果是手动模式，不自动判断
-            if (this.isManualMode) {
-                return;
-            }
-
-            // 延迟判断，等待视频加载
-            setTimeout(() => {
-                // 再次检查手动模式（防止延迟期间用户切换）
-                if (this.isManualMode) {
-                    return;
-                }
-
-                const currentVideo = this.videoEnlarger.videoDetector.getCurrentVideo();
-                const isPortrait = currentVideo ?
-                    this.videoEnlarger.videoDetector.isPortraitVideo(currentVideo) : false;
-
-                const pageAdapter = new PageAdapter(this.videoEnlarger.videoDetector);
-                const pageType = pageAdapter.detectPageType();
-                const isLive = pageType.isLive;
-
-                const shouldHide = !isPortrait || isLive;
-
-                if (shouldHide) {
-                    this.isButtonVisible = false;
-                    this.toggleButton.style.display = 'none';
-                    this.panel.classList.add('hidden');
-                    this.isVisible = false;
-                } else {
-                    this.isButtonVisible = true;
-                    this.toggleButton.style.display = 'flex';
-                }
-            }, 500);  // 500ms 延迟，等待视频加载
+            // 按钮默认隐藏，由用户按F键手动显示
+            // 不再自动判断场景
         }
 
         // 初始化
