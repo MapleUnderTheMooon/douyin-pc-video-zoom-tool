@@ -465,6 +465,14 @@
             this.isVisible = false; // 默认隐藏面板
             this.isMinimized = false;
             this.storageKey = 'douyin-video-tool-settings';
+            // 拖动相关
+            this.isButtonDragging = false;
+            this.buttonDragStartX = 0;
+            this.buttonDragStartY = 0;
+            this.buttonStartLeft = 0;
+            this.buttonStartTop = 0;
+            this.isButtonVisible = true; // 按钮是否可见
+            this.isToggling = false; // 防止重复触发标志位
         }
 
         // 从localStorage加载设置
@@ -481,6 +489,15 @@
                     if (settings.panelMinimized !== undefined) {
                         this.isMinimized = settings.panelMinimized;
                     }
+                    
+                    // 加载按钮位置和可见性
+                    if (settings.buttonPosition) {
+                        this.buttonPosition = settings.buttonPosition;
+                    }
+                    
+                    if (settings.isButtonVisible !== undefined) {
+                        this.isButtonVisible = settings.isButtonVisible;
+                    }
                 }
             } catch (e) {
                 console.error('Failed to load settings:', e);
@@ -492,7 +509,10 @@
             try {
                 const settings = {
                     enlargementEnabled: this.videoEnlarger.enabled,
-                    panelMinimized: this.isMinimized
+                    panelMinimized: this.isMinimized,
+                    // 保存按钮位置和可见性
+                    buttonPosition: this.buttonPosition,
+                    isButtonVisible: this.isButtonVisible
                 };
                 localStorage.setItem(this.storageKey, JSON.stringify(settings));
             } catch (e) {
@@ -511,14 +531,110 @@
             this.toggleButton.className = 'douyin-toggle-button';
             this.toggleButton.innerHTML = `
                 <span class="douyin-toggle-icon">⚙</span>
-                <span class="douyin-toggle-text">视频工具</span>
             `;
+
+            // 应用保存的位置
+            if (this.buttonPosition) {
+                this.toggleButton.style.left = `${this.buttonPosition.left}px`;
+                this.toggleButton.style.top = `${this.buttonPosition.top}px`;
+                this.toggleButton.style.right = 'auto';
+            }
+
+            // 应用可见性
+            if (!this.isButtonVisible) {
+                this.toggleButton.style.display = 'none';
+            }
 
             // 点击切换面板
             this.toggleButton.addEventListener('click', (e) => {
                 e.stopPropagation();
+
+                // 如果刚刚在拖拽，不触发面板切换
+                if (this.hasActuallyDragged) {
+                    this.hasActuallyDragged = false;
+                    return;
+                }
+
                 this.togglePanel();
             });
+
+            // 拖动功能
+            this.toggleButton.addEventListener('mousedown', (e) => {
+                // 只处理左键点击
+                if (e.button !== 0) {
+                    return;
+                }
+
+                e.stopPropagation();
+                this.isButtonDragging = true;
+                this.hasActuallyDragged = false;  // 记录是否真的拖拽了
+                this.buttonDragStartX = e.clientX;
+                this.buttonDragStartY = e.clientY;
+
+                // 获取按钮当前位置
+                const rect = this.toggleButton.getBoundingClientRect();
+                this.buttonStartLeft = rect.left;
+                this.buttonStartTop = rect.top;
+
+                // 隐藏面板，避免拖动时遮挡
+                this.panel.classList.add('hidden');
+                this.isVisible = false;
+            });
+
+            // 鼠标移动
+            const handleMouseMove = (e) => {
+                if (!this.isButtonDragging) {
+                    return;
+                }
+
+                e.preventDefault();
+
+                // 计算新位置
+                const deltaX = e.clientX - this.buttonDragStartX;
+                const deltaY = e.clientY - this.buttonDragStartY;
+
+                // 如果移动距离超过5像素，认为是真的在拖拽
+                if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+                    this.hasActuallyDragged = true;
+                }
+
+                let newLeft = this.buttonStartLeft + deltaX;
+                let newTop = this.buttonStartTop + deltaY;
+
+                // 限制在可视区域内
+                const buttonWidth = this.toggleButton.offsetWidth;
+                const buttonHeight = this.toggleButton.offsetHeight;
+                newLeft = Math.max(0, Math.min(window.innerWidth - buttonWidth, newLeft));
+                newTop = Math.max(0, Math.min(window.innerHeight - buttonHeight, newTop));
+
+                // 更新按钮位置
+                this.toggleButton.style.left = `${newLeft}px`;
+                this.toggleButton.style.top = `${newTop}px`;
+                this.toggleButton.style.right = 'auto';
+            };
+
+            // 鼠标释放
+            const handleMouseUp = () => {
+                if (!this.isButtonDragging) {
+                    return;
+                }
+
+                this.isButtonDragging = false;
+                
+                // 保存位置
+                const rect = this.toggleButton.getBoundingClientRect();
+                this.buttonPosition = {
+                    left: rect.left,
+                    top: rect.top
+                };
+                this.saveSettings();
+                
+                
+            };
+
+            // 添加全局事件监听
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
 
             document.body.appendChild(this.toggleButton);
             return this.toggleButton;
@@ -579,7 +695,7 @@
             const shortcuts = document.createElement('div');
             shortcuts.className = 'douyin-panel-section douyin-panel-shortcuts';
             shortcuts.innerHTML = `
-                <div class="douyin-shortcut-hint">快捷键: F 切换面板</div>
+                <div class="douyin-shortcut-hint">快捷键: F 切换按钮</div>
             `;
 
             content.appendChild(scaleSection);
@@ -621,41 +737,12 @@
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    transition: all 0.3s ease;
                     backdrop-filter: blur(10px);
-                    overflow: hidden;
-                }
-
-                .douyin-toggle-button:hover {
-                    width: 120px;
-                    border-radius: 25px;
-                    background: rgba(24, 144, 255, 1);
-                    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
                 }
 
                 .douyin-toggle-icon {
                     font-size: 24px;
                     color: white;
-                    transition: all 0.3s ease;
-                    white-space: nowrap;
-                }
-
-                .douyin-toggle-text {
-                    color: white;
-                    font-size: 14px;
-                    font-weight: 500;
-                    margin-left: 8px;
-                    opacity: 0;
-                    width: 0;
-                    overflow: hidden;
-                    transition: all 0.3s ease;
-                    white-space: nowrap;
-                }
-
-                .douyin-toggle-button:hover .douyin-toggle-text {
-                    opacity: 1;
-                    width: auto;
-                    margin-left: 8px;
                 }
 
                 .douyin-control-panel {
@@ -669,8 +756,12 @@
                     z-index: 100000;
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                     font-size: 14px;
-                    transition: all 0.3s ease;
+                    transition: opacity 0.3s ease, transform 0.3s ease;
                     backdrop-filter: blur(10px);
+                }
+
+                .douyin-control-panel.dragging {
+                    transition: none !important;
                 }
 
                 .douyin-control-panel.minimized .douyin-panel-content {
@@ -832,40 +923,101 @@
         enableDrag() {
             const header = this.panel.querySelector('.douyin-panel-header');
             let isDragging = false;
-            let currentX, currentY, initialX, initialY;
+            let startX, startY;
 
             header.addEventListener('mousedown', (e) => {
                 if (e.target.tagName === 'BUTTON') {
                     return;
                 }
                 isDragging = true;
-                initialX = e.clientX - this.panel.offsetLeft;
-                initialY = e.clientY - this.panel.offsetTop;
+                startX = e.clientX;
+                startY = e.clientY;
+                // 禁用过渡，实现跟手效果
+                this.panel.classList.add('dragging');
+                e.preventDefault();
             });
 
             document.addEventListener('mousemove', (e) => {
                 if (!isDragging) return;
-                e.preventDefault();
-                currentX = e.clientX - initialX;
-                currentY = e.clientY - initialY;
-                this.panel.style.left = currentX + 'px';
-                this.panel.style.right = 'auto';
-                this.panel.style.top = currentY + 'px';
+
+                const deltaX = e.clientX - startX;
+                const deltaY = e.clientY - startY;
+
+                // 使用 transform 和 translate3d 启用硬件加速
+                this.panel.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
             });
 
-            document.addEventListener('mouseup', () => {
+            document.addEventListener('mouseup', (e) => {
+                if (!isDragging) return;
                 isDragging = false;
+
+                // 保存最终位置到 left/top
+                const deltaX = e.clientX - startX;
+                const deltaY = e.clientY - startY;
+                const currentLeft = this.panel.offsetLeft;
+                const currentTop = this.panel.offsetTop;
+
+                this.panel.style.left = (currentLeft + deltaX) + 'px';
+                this.panel.style.top = (currentTop + deltaY) + 'px';
+                this.panel.style.right = 'auto';
+                this.panel.style.transform = '';
+                this.panel.classList.remove('dragging');
             });
         }
 
         // 切换面板显示/隐藏
         togglePanel() {
+            // 防止重复触发
+            if (this.isToggling) {
+                return;
+            }
+
+            this.isToggling = true;
             this.isVisible = !this.isVisible;
+
             if (this.isVisible) {
                 this.panel.classList.remove('hidden');
+                // 延迟添加监听器，避免当前点击事件触发它
+                setTimeout(() => {
+                    document.addEventListener('click', this.handleOutsideClick);
+                    this.isToggling = false;
+                }, 100);
             } else {
                 this.panel.classList.add('hidden');
+                document.removeEventListener('click', this.handleOutsideClick);
+                this.isToggling = false;
             }
+        }
+
+        // 点击外部隐藏面板
+        handleOutsideClick = (e) => {
+            // 排除按钮、面板及其子元素
+            if (this.panel &&
+                !this.panel.contains(e.target) &&
+                e.target !== this.toggleButton &&
+                !this.toggleButton.contains(e.target)) {
+                this.panel.classList.add('hidden');
+                this.isVisible = false;
+                document.removeEventListener('click', this.handleOutsideClick);
+            }
+        }
+
+        // 切换按钮可见性
+        toggleButtonVisibility() {
+            this.isButtonVisible = !this.isButtonVisible;
+            if (this.isButtonVisible) {
+                this.toggleButton.style.display = 'flex';
+                // 显示时检查边缘收缩
+                setTimeout(() => {
+                    this.checkEdgeShrink();
+                }, 100);
+            } else {
+                this.toggleButton.style.display = 'none';
+                // 隐藏按钮时也隐藏面板
+                this.panel.classList.add('hidden');
+                this.isVisible = false;
+            }
+            this.saveSettings();
         }
 
         // 初始化
@@ -881,11 +1033,11 @@
 
             // 快捷键支持
             document.addEventListener('keydown', (e) => {
-                // F键切换面板显示
+                // F键切换按钮显示
                 if (e.key === 'F' || e.key === 'f') {
                     if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
                         e.preventDefault();
-                        this.togglePanel();
+                        this.toggleButtonVisibility();
                     }
                 }
             });
