@@ -473,6 +473,7 @@
             this.buttonStartTop = 0;
             this.isButtonVisible = true; // 按钮是否可见
             this.isToggling = false; // 防止重复触发标志位
+            this.isManualMode = false; // 手动模式：用户按F键后不再自动判断
         }
 
         // 从localStorage加载设置
@@ -490,13 +491,9 @@
                         this.isMinimized = settings.panelMinimized;
                     }
                     
-                    // 加载按钮位置和可见性
+                    // 加载按钮位置
                     if (settings.buttonPosition) {
                         this.buttonPosition = settings.buttonPosition;
-                    }
-                    
-                    if (settings.isButtonVisible !== undefined) {
-                        this.isButtonVisible = settings.isButtonVisible;
                     }
                 }
             } catch (e) {
@@ -510,9 +507,8 @@
                 const settings = {
                     enlargementEnabled: this.videoEnlarger.enabled,
                     panelMinimized: this.isMinimized,
-                    // 保存按钮位置和可见性
-                    buttonPosition: this.buttonPosition,
-                    isButtonVisible: this.isButtonVisible
+                    // 保存按钮位置
+                    buttonPosition: this.buttonPosition
                 };
                 localStorage.setItem(this.storageKey, JSON.stringify(settings));
             } catch (e) {
@@ -529,6 +525,7 @@
             this.toggleButton = document.createElement('div');
             this.toggleButton.id = 'douyin-toggle-button';
             this.toggleButton.className = 'douyin-toggle-button';
+            this.toggleButton.style.display = 'none';  // 初始隐藏，等待判断
             this.toggleButton.innerHTML = `
                 <span class="douyin-toggle-icon">⚙</span>
             `;
@@ -538,11 +535,6 @@
                 this.toggleButton.style.left = `${this.buttonPosition.left}px`;
                 this.toggleButton.style.top = `${this.buttonPosition.top}px`;
                 this.toggleButton.style.right = 'auto';
-            }
-
-            // 应用可见性
-            if (!this.isButtonVisible) {
-                this.toggleButton.style.display = 'none';
             }
 
             // 点击切换面板
@@ -1005,6 +997,8 @@
         // 切换按钮可见性
         toggleButtonVisibility() {
             this.isButtonVisible = !this.isButtonVisible;
+            this.isManualMode = true;  // 进入手动模式
+
             if (this.isButtonVisible) {
                 this.toggleButton.style.display = 'flex';
                 // 显示时检查边缘收缩
@@ -1017,7 +1011,42 @@
                 this.panel.classList.add('hidden');
                 this.isVisible = false;
             }
-            this.saveSettings();
+        }
+
+        // 根据页面场景自动调整按钮可见性
+        autoAdjustButtonVisibility() {
+            // 如果是手动模式，不自动判断
+            if (this.isManualMode) {
+                return;
+            }
+
+            // 延迟判断，等待视频加载
+            setTimeout(() => {
+                // 再次检查手动模式（防止延迟期间用户切换）
+                if (this.isManualMode) {
+                    return;
+                }
+
+                const currentVideo = this.videoEnlarger.videoDetector.getCurrentVideo();
+                const isPortrait = currentVideo ?
+                    this.videoEnlarger.videoDetector.isPortraitVideo(currentVideo) : false;
+
+                const pageAdapter = new PageAdapter(this.videoEnlarger.videoDetector);
+                const pageType = pageAdapter.detectPageType();
+                const isLive = pageType.isLive;
+
+                const shouldHide = !isPortrait || isLive;
+
+                if (shouldHide) {
+                    this.isButtonVisible = false;
+                    this.toggleButton.style.display = 'none';
+                    this.panel.classList.add('hidden');
+                    this.isVisible = false;
+                } else {
+                    this.isButtonVisible = true;
+                    this.toggleButton.style.display = 'flex';
+                }
+            }, 500);  // 500ms 延迟，等待视频加载
         }
 
         // 初始化
@@ -1030,6 +1059,26 @@
 
             // 创建面板
             this.createPanel();
+
+            // 智能判断按钮是否应该显示
+            this.autoAdjustButtonVisibility();
+
+            // 监听路由变化，带防抖
+            let debounceTimer;
+            const observer = new MutationObserver(() => {
+                // 只在非手动模式下才重新判断
+                if (!this.isManualMode) {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(() => {
+                        this.autoAdjustButtonVisibility();
+                    }, 300);
+                }
+            });
+
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
 
             // 快捷键支持
             document.addEventListener('keydown', (e) => {
