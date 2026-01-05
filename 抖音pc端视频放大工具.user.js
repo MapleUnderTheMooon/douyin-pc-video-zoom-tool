@@ -4,7 +4,7 @@
 // @version      0.0.2
 // @description  抖音PC端视频放大工具（支持所有视频）
 // @author       spl
-// @match        https://www.douyin.com/*
+// @match        https://*.douyin.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_setValue
 // @grant        GM_getValue
