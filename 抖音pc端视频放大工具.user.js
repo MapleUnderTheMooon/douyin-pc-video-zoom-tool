@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.2
+// @version      0.0.4
 // @description  抖音PC端视频放大工具（支持所有视频）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -152,7 +152,7 @@
             this.videoDetector = videoDetector;
             this.currentVideo = null;
             this.scale = 1; // 默认放大倍数
-            this.enabled = true;
+            this.enabled = false;
             this.styleId = 'douyin-video-enlarger-style';
             // 拖拽位置
             this.translateX = 0;
@@ -652,7 +652,6 @@
             this.toggleButton = null;
             this.isVisible = false; // 默认隐藏面板
             this.isMinimized = false;
-            this.storageKey = 'douyin-video-tool-settings';
             // 拖动相关
             this.isButtonDragging = false;
             this.buttonDragStartX = 0;
@@ -662,46 +661,6 @@
             this.isButtonVisible = false; // 按钮是否可见（默认隐藏）
             this.isToggling = false; // 防止重复触发标志位
             this.isManualMode = false; // 手动模式：用户按F键后不再自动判断
-        }
-
-        // 从localStorage加载设置
-        loadSettings() {
-            try {
-                const saved = localStorage.getItem(this.storageKey);
-                if (saved) {
-                    const settings = JSON.parse(saved);
-                    
-                    if (settings.enlargementEnabled !== undefined) {
-                        this.videoEnlarger.setEnabled(settings.enlargementEnabled);
-                    }
-                    
-                    if (settings.panelMinimized !== undefined) {
-                        this.isMinimized = settings.panelMinimized;
-                    }
-                    
-                    // 加载按钮位置
-                    if (settings.buttonPosition) {
-                        this.buttonPosition = settings.buttonPosition;
-                    }
-                }
-            } catch (e) {
-                console.error('Failed to load settings:', e);
-            }
-        }
-
-        // 保存设置到localStorage
-        saveSettings() {
-            try {
-                const settings = {
-                    enlargementEnabled: this.videoEnlarger.enabled,
-                    panelMinimized: this.isMinimized,
-                    // 保存按钮位置
-                    buttonPosition: this.buttonPosition
-                };
-                localStorage.setItem(this.storageKey, JSON.stringify(settings));
-            } catch (e) {
-                console.error('Failed to save settings:', e);
-            }
         }
 
         // 创建圆形按钮
@@ -717,13 +676,6 @@
             this.toggleButton.innerHTML = `
                 <span class="douyin-toggle-icon">⚙</span>
             `;
-
-            // 应用保存的位置
-            if (this.buttonPosition) {
-                this.toggleButton.style.left = `${this.buttonPosition.left}px`;
-                this.toggleButton.style.top = `${this.buttonPosition.top}px`;
-                this.toggleButton.style.right = 'auto';
-            }
 
             // 点击切换面板
             this.toggleButton.addEventListener('click', (e) => {
@@ -800,16 +752,6 @@
                 }
 
                 this.isButtonDragging = false;
-                
-                // 保存位置
-                const rect = this.toggleButton.getBoundingClientRect();
-                this.buttonPosition = {
-                    left: rect.left,
-                    top: rect.top
-                };
-                this.saveSettings();
-                
-                
             };
 
             // 添加全局事件监听
@@ -1079,14 +1021,12 @@
                 const value = parseFloat(e.target.value);
                 scaleValue.textContent = value.toFixed(1) + 'x';
                 this.videoEnlarger.setScale(value);
-                this.saveSettings();
             });
 
             // 放大开关
             const enlargementToggle = this.panel.querySelector('#douyin-enlargement-toggle');
             enlargementToggle.addEventListener('change', (e) => {
                 this.videoEnlarger.setEnabled(e.target.checked);
-                this.saveSettings();
             });
 
             // 关闭按钮
@@ -1204,9 +1144,6 @@
 
         // 初始化
         init() {
-            // 加载设置
-            this.loadSettings();
-
             // 创建圆形按钮
             this.createToggleButton();
 
