@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.4
+// @version      0.0.5
 // @description  抖音PC端视频放大工具（支持所有视频）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -163,6 +163,10 @@
             // 样式保护器
             this.styleProtector = null;
             this._pauseHandler = null;
+            // 容器事件监听器引用
+            this._mousedownHandler = null;
+            this._mouseenterHandler = null;
+            this._mouseleaveHandler = null;
         }
 
         // 设置样式保护器，防止抖音暂停时清除放大效果
@@ -355,8 +359,7 @@
             const newStyle = this.mergeStyles(currentStyle, {
                 transform: `scale(${this.scale}) translate(${this.translateX}px, ${this.translateY}px)`,
                 transformOrigin: 'center center',
-                transition: this.isDragging ? 'none' : 'transform 0.3s ease',
-                cursor: 'grab'
+                transition: this.isDragging ? 'none' : 'transform 0.3s ease'
             });
 
             video.setAttribute('style', newStyle);
@@ -374,7 +377,8 @@
                     overflow: 'visible',
                     display: 'flex',
                     justifyContent: 'center',
-                    alignItems: 'center'
+                    alignItems: 'center',
+                    cursor: 'grab'
                 });
                 container.setAttribute('style', newContainerStyle);
             }
@@ -386,6 +390,9 @@
                 return;
             }
 
+            // 获取视频容器
+            const container = video.parentElement;
+
             // 清理样式保护器
             if (this.styleProtector) {
                 this.styleProtector.disconnect();
@@ -394,6 +401,28 @@
             if (this._pauseHandler) {
                 video.removeEventListener('pause', this._pauseHandler);
                 this._pauseHandler = null;
+            }
+
+            // 清理容器事件监听器
+            if (container) {
+                if (this._mousedownHandler) {
+                    container.removeEventListener('mousedown', this._mousedownHandler);
+                }
+                if (this._mouseenterHandler) {
+                    container.removeEventListener('mouseenter', this._mouseenterHandler);
+                }
+                if (this._mouseleaveHandler) {
+                    container.removeEventListener('mouseleave', this._mouseleaveHandler);
+                }
+                
+                // 移除容器上的光标样式
+                if (container.hasAttribute('style')) {
+                    const containerStyle = container.getAttribute('style') || '';
+                    const newContainerStyle = containerStyle
+                        .replace(/cursor\s*:\s*[^;]+;?/gi, '')
+                        .trim();
+                    container.setAttribute('style', newContainerStyle || '');
+                }
             }
 
             // 重置拖拽位置
@@ -413,12 +442,11 @@
                 video.setAttribute('style', originalStyle);
                 video.removeAttribute('data-original-style');
             } else {
-                // 移除transform相关样式和cursor
+                // 移除transform相关样式
                 const currentStyle = video.getAttribute('style') || '';
                 const newStyle = currentStyle
                     .replace(/transform\s*:\s*[^;]+;?/gi, '')
                     .replace(/transform-origin\s*:\s*[^;]+;?/gi, '')
-                    .replace(/cursor\s*:\s*[^;]+;?/gi, '')
                     .trim();
                 video.setAttribute('style', newStyle || '');
             }
@@ -446,6 +474,20 @@
                     this.currentVideo.removeEventListener('timeupdate', this._timeupdateHandler);
                     this._timeupdateHandler = null;
                 }
+                
+                // 清理容器事件监听器
+                const container = this.currentVideo.parentElement;
+                if (container) {
+                    if (this._mousedownHandler) {
+                        container.removeEventListener('mousedown', this._mousedownHandler);
+                    }
+                    if (this._mouseenterHandler) {
+                        container.removeEventListener('mouseenter', this._mouseenterHandler);
+                    }
+                    if (this._mouseleaveHandler) {
+                        container.removeEventListener('mouseleave', this._mouseleaveHandler);
+                    }
+                }
             }
             
             // 清理全局事件监听器
@@ -469,6 +511,11 @@
                 cancelAnimationFrame(this._styleUpdateFrameId);
                 this._styleUpdateFrameId = null;
             }
+            
+            // 清理容器事件监听器引用
+            this._mousedownHandler = null;
+            this._mouseenterHandler = null;
+            this._mouseleaveHandler = null;
         }
 
         // 合并样式字符串
@@ -500,13 +547,25 @@
                 return;
             }
 
+            // 获取视频容器
+            const container = video.parentElement;
+            if (!container) {
+                return;
+            }
+
             // 移除旧的事件监听器（如果存在）
-            if (video.onmousedown) {
-                video.onmousedown = null;
+            if (this._mousedownHandler) {
+                container.removeEventListener('mousedown', this._mousedownHandler);
+            }
+            if (this._mouseenterHandler) {
+                container.removeEventListener('mouseenter', this._mouseenterHandler);
+            }
+            if (this._mouseleaveHandler) {
+                container.removeEventListener('mouseleave', this._mouseleaveHandler);
             }
 
             // 鼠标按下
-            video.addEventListener('mousedown', (e) => {
+            this._mousedownHandler = (e) => {
                 // 只处理左键点击
                 if (e.button !== 0) {
                     return;
@@ -522,12 +581,13 @@
                 this.dragStartY = e.clientY - this.translateY;
 
                 // 更新鼠标样式
-                video.style.cursor = 'grabbing';
+                container.style.cursor = 'grabbing';
                 video.style.transition = 'none';
 
                 e.preventDefault();
                 e.stopPropagation();
-            });
+            };
+            container.addEventListener('mousedown', this._mousedownHandler);
 
             // 只添加一次全局事件监听器
             if (!this._globalMouseMoveHandler) {
@@ -582,24 +642,26 @@
                         this._dragFrameId = null;
                     }
 
-                    this.currentVideo.style.cursor = 'grab';
+                    container.style.cursor = 'grab';
                     this.currentVideo.style.transition = 'transform 0.3s ease';
                 };
                 document.addEventListener('mouseup', this._globalMouseUpHandler);
             }
 
             // 鼠标悬停时显示手形
-            video.addEventListener('mouseenter', () => {
+            this._mouseenterHandler = () => {
                 if (this.enabled) {
-                    video.style.cursor = 'grab';
+                    container.style.cursor = 'grab';
                 }
-            });
+            };
+            container.addEventListener('mouseenter', this._mouseenterHandler);
 
-            video.addEventListener('mouseleave', () => {
+            this._mouseleaveHandler = () => {
                 if (!this.isDragging) {
-                    video.style.cursor = '';
+                    container.style.cursor = '';
                 }
-            });
+            };
+            container.addEventListener('mouseleave', this._mouseleaveHandler);
         }
 
         // 处理视频变化
