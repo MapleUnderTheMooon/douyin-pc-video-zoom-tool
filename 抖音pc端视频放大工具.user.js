@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.5
+// @version      0.0.6
 // @description  抖音PC端视频放大工具（支持所有视频）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -1093,7 +1093,8 @@
 
             // 关闭按钮
             const closeBtn = this.panel.querySelector('.douyin-panel-close');
-            closeBtn.addEventListener('click', () => {
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation(); // 阻止事件冒泡，防止触发下方的切换按钮
                 this.togglePanel();
             });
 
