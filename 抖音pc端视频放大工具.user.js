@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.6
+// @version      0.0.7
 // @description  抖音PC端视频放大工具（支持所有视频）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -178,10 +178,10 @@
 
             // 移除旧的事件监听器
             if (this._pauseHandler && this.currentVideo && this.currentVideo !== video) {
-                this.currentVideo.removeEventListener('pause', this._pauseHandler);
+                this.currentVideo.removeEventListener('pause', this._pauseHandler, true);
             }
             if (this._playHandler && this.currentVideo && this.currentVideo !== video) {
-                this.currentVideo.removeEventListener('play', this._playHandler);
+                this.currentVideo.removeEventListener('play', this._playHandler, true);
             }
             if (this._timeupdateHandler && this.currentVideo && this.currentVideo !== video) {
                 this.currentVideo.removeEventListener('timeupdate', this._timeupdateHandler);
@@ -225,6 +225,20 @@
                 }
             };
 
+            // 精确检测transform中的scale值是否被修改
+            const isScaleModified = (currentTransform) => {
+                if (!currentTransform) {
+                    return true;
+                }
+                // 提取scale值
+                const scaleMatch = currentTransform.match(/scale\(([^)]+)\)/);
+                if (!scaleMatch) {
+                    return true;
+                }
+                const currentScale = parseFloat(scaleMatch[1]);
+                return Math.abs(currentScale - this.scale) > 0.01;
+            };
+
             // 创建新的 MutationObserver 监听更多变化
             this.styleProtector = new MutationObserver((mutations) => {
                 // 检查是否有影响放大效果的变化
@@ -232,27 +246,66 @@
                     // 检查视频自身的style变化
                     if (mutation.type === 'attributes' && mutation.attributeName === 'style' && mutation.target === video) {
                         const currentTransform = video.style.transform;
-                        return !currentTransform || !currentTransform.includes(`scale(${this.scale})`);
+                        return isScaleModified(currentTransform);
                     }
                     // 检查父元素的style变化，抖音可能通过修改父元素影响视频
                     if (mutation.type === 'attributes' && mutation.attributeName === 'style' && mutation.target === video.parentElement) {
-                        return true;
+                        // 检查父元素的transform是否影响视频
+                        const parentTransform = video.parentElement.style.transform;
+                        return parentTransform && (parentTransform.includes('scale') || parentTransform.includes('translate'));
                     }
                     // 检查父元素的class变化
                     if (mutation.type === 'attributes' && mutation.attributeName === 'class' && mutation.target === video.parentElement) {
-                        return true;
+                        // 只在class变化可能影响视频布局时才重新应用
+                        const className = video.parentElement.className;
+                        return className.includes('fullscreen') || className.includes('paused') || className.includes('playing');
+                    }
+                    // 检查祖先元素的变化，抖音可能通过修改祖先元素影响视频
+                    if (mutation.type === 'attributes' && (mutation.attributeName === 'style' || mutation.attributeName === 'class')) {
+                        // 检查是否是视频的祖先元素
+                        let ancestor = mutation.target;
+                        while (ancestor && ancestor !== document.body) {
+                            if (ancestor.contains(video)) {
+                                // 检查祖先元素的class是否包含可能影响视频的类名
+                                if (ancestor.className && (ancestor.className.includes('video') || ancestor.className.includes('player') || ancestor.className.includes('container'))) {
+                                    return true;
+                                }
+                                // 检查祖先元素的style是否包含transform
+                                if (ancestor.style.transform && (ancestor.style.transform.includes('scale') || ancestor.style.transform.includes('translate'))) {
+                                    return true;
+                                }
+                                break;
+                            }
+                            ancestor = ancestor.parentElement;
+                        }
+                    }
+                    // 检查是否有新元素添加到视频容器中，抖音可能添加暂停覆盖层
+                    if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                        // 检查是否是视频的祖先元素添加了新节点
+                        let ancestor = mutation.target;
+                        while (ancestor && ancestor !== document.body) {
+                            if (ancestor.contains(video)) {
+                                return true;
+                            }
+                            ancestor = ancestor.parentElement;
+                        }
                     }
                     return false;
                 });
                 
                 if (needReapply) {
-                    // 使用requestAnimationFrame节流，避免频繁调用
-                    if (!this._styleUpdateFrameId) {
-                        this._styleUpdateFrameId = requestAnimationFrame(() => {
-                            applyEnlargementSafe();
-                            this._styleUpdateFrameId = null;
-                        });
+                    // 减少防抖动时间，确保更及时地响应样式变化
+                    if (this._styleUpdateTimeout) {
+                        clearTimeout(this._styleUpdateTimeout);
                     }
+                    this._styleUpdateTimeout = setTimeout(() => {
+                        if (!this._styleUpdateFrameId) {
+                            this._styleUpdateFrameId = requestAnimationFrame(() => {
+                                applyEnlargementSafe();
+                                this._styleUpdateFrameId = null;
+                            });
+                        }
+                    }, 10); // 10ms防抖动，减少用户看到放大效果消失的瞬间
                 }
             });
 
@@ -266,32 +319,62 @@
             if (video.parentElement) {
                 this.styleProtector.observe(video.parentElement, {
                     attributes: true,
-                    attributeFilter: ['style', 'class']
+                    attributeFilter: ['style', 'class'],
+                    childList: true
                 });
+                
+                // 监听祖父元素的变化，扩展监听范围
+                const grandParent = video.parentElement.parentElement;
+                if (grandParent) {
+                    this.styleProtector.observe(grandParent, {
+                        attributes: true,
+                        attributeFilter: ['style', 'class']
+                    });
+                }
             }
 
-            // 监听 pause 事件，暂停时保存状态并立即重新应用放大效果
+            // 监听 pause 事件，保存状态并立即重新应用放大效果
             if (!this._pauseHandler) {
                 this._pauseHandler = () => {
                     saveCurrentState();
-                    // 立即重新应用放大效果，防止抖音清除
+                    // 立即重新应用放大效果，确保空格键暂停时放大倍数不会被取消
                     applyEnlargementSafe();
-                    // 添加一个延迟，确保抖音的暂停处理完成后再次应用
-                    setTimeout(applyEnlargementSafe, 50);
+                    // 添加一个小延迟，确保抖音的暂停处理完成后再次应用
+                    setTimeout(applyEnlargementSafe, 30);
+                    // 添加延迟的一次性检查，确保视频暂停后放大效果不会丢失
+                    if (this._pauseCheckTimeout) {
+                        clearTimeout(this._pauseCheckTimeout);
+                    }
+                    this._pauseCheckTimeout = setTimeout(() => {
+                        if (this.enabled && video === this.currentVideo) {
+                            const currentTransform = video.style.transform;
+                            if (isScaleModified(currentTransform)) {
+                                applyEnlargementSafe();
+                            }
+                        }
+                    }, 200); // 200ms延迟检查，减少用户看到放大效果消失的瞬间
                 };
             }
-            video.addEventListener('pause', this._pauseHandler);
+            // 使用捕获阶段的事件监听器，确保我们的处理在抖音之前执行
+            video.addEventListener('pause', this._pauseHandler, true);
 
-            // 监听 play 事件，播放时恢复状态和放大效果
+            // 监听 play 事件，恢复状态并立即重新应用放大效果
             if (!this._playHandler) {
                 this._playHandler = () => {
                     restoreState();
+                    // 清除暂停检查定时器
+                    if (this._pauseCheckTimeout) {
+                        clearTimeout(this._pauseCheckTimeout);
+                        this._pauseCheckTimeout = null;
+                    }
+                    // 添加立即重新应用放大效果，确保视频恢复播放时放大效果也能恢复
                     applyEnlargementSafe();
                     // 添加一个延迟，确保抖音的播放处理完成后再次应用
-                    setTimeout(applyEnlargementSafe, 50);
+                    setTimeout(applyEnlargementSafe, 30);
                 };
             }
-            video.addEventListener('play', this._playHandler);
+            // 使用捕获阶段的事件监听器，确保我们的处理在抖音之前执行
+            video.addEventListener('play', this._playHandler, true);
 
             // 监听 timeupdate 事件，确保播放过程中放大效果持续存在
             // 这个事件触发频率适中，不会造成性能问题
@@ -302,13 +385,38 @@
                     if (!this._lastTimeupdateCheck || now - this._lastTimeupdateCheck > 500) {
                         this._lastTimeupdateCheck = now;
                         const currentTransform = video.style.transform;
-                        if (!currentTransform || !currentTransform.includes(`scale(${this.scale})`)) {
+                        if (isScaleModified(currentTransform)) {
                             applyEnlargementSafe();
                         }
                     }
                 };
             }
             video.addEventListener('timeupdate', this._timeupdateHandler);
+
+            // 监听 seeking 事件，确保拖动进度条时放大效果保持稳定
+            if (!this._seekingHandler) {
+                this._seekingHandler = () => {
+                    applyEnlargementSafe();
+                };
+            }
+            video.addEventListener('seeking', this._seekingHandler);
+
+            // 监听 seeked 事件，确保拖动进度条完成后放大效果保持稳定
+            if (!this._seekedHandler) {
+                this._seekedHandler = () => {
+                    applyEnlargementSafe();
+                    setTimeout(applyEnlargementSafe, 30);
+                };
+            }
+            video.addEventListener('seeked', this._seekedHandler);
+
+            // 监听 ratechange 事件，确保播放速度改变时放大效果保持稳定
+            if (!this._ratechangeHandler) {
+                this._ratechangeHandler = () => {
+                    applyEnlargementSafe();
+                };
+            }
+            video.addEventListener('ratechange', this._ratechangeHandler);
         }
 
         // 设置放大倍数
@@ -399,8 +507,28 @@
                 this.styleProtector = null;
             }
             if (this._pauseHandler) {
-                video.removeEventListener('pause', this._pauseHandler);
+                video.removeEventListener('pause', this._pauseHandler, true);
                 this._pauseHandler = null;
+            }
+            if (this._playHandler) {
+                video.removeEventListener('play', this._playHandler, true);
+                this._playHandler = null;
+            }
+            if (this._timeupdateHandler) {
+                video.removeEventListener('timeupdate', this._timeupdateHandler);
+                this._timeupdateHandler = null;
+            }
+            if (this._seekingHandler) {
+                video.removeEventListener('seeking', this._seekingHandler);
+                this._seekingHandler = null;
+            }
+            if (this._seekedHandler) {
+                video.removeEventListener('seeked', this._seekedHandler);
+                this._seekedHandler = null;
+            }
+            if (this._ratechangeHandler) {
+                video.removeEventListener('ratechange', this._ratechangeHandler);
+                this._ratechangeHandler = null;
             }
 
             // 清理容器事件监听器
@@ -463,16 +591,28 @@
             // 清理视频事件监听器
             if (this.currentVideo) {
                 if (this._pauseHandler) {
-                    this.currentVideo.removeEventListener('pause', this._pauseHandler);
+                    this.currentVideo.removeEventListener('pause', this._pauseHandler, true);
                     this._pauseHandler = null;
                 }
                 if (this._playHandler) {
-                    this.currentVideo.removeEventListener('play', this._playHandler);
+                    this.currentVideo.removeEventListener('play', this._playHandler, true);
                     this._playHandler = null;
                 }
                 if (this._timeupdateHandler) {
                     this.currentVideo.removeEventListener('timeupdate', this._timeupdateHandler);
                     this._timeupdateHandler = null;
+                }
+                if (this._seekingHandler) {
+                    this.currentVideo.removeEventListener('seeking', this._seekingHandler);
+                    this._seekingHandler = null;
+                }
+                if (this._seekedHandler) {
+                    this.currentVideo.removeEventListener('seeked', this._seekedHandler);
+                    this._seekedHandler = null;
+                }
+                if (this._ratechangeHandler) {
+                    this.currentVideo.removeEventListener('ratechange', this._ratechangeHandler);
+                    this._ratechangeHandler = null;
                 }
                 
                 // 清理容器事件监听器
@@ -510,6 +650,18 @@
             if (this._styleUpdateFrameId) {
                 cancelAnimationFrame(this._styleUpdateFrameId);
                 this._styleUpdateFrameId = null;
+            }
+            
+            // 清理防抖动定时器
+            if (this._styleUpdateTimeout) {
+                clearTimeout(this._styleUpdateTimeout);
+                this._styleUpdateTimeout = null;
+            }
+            
+            // 清理暂停检查定时器
+            if (this._pauseCheckTimeout) {
+                clearTimeout(this._pauseCheckTimeout);
+                this._pauseCheckTimeout = null;
             }
             
             // 清理容器事件监听器引用
