@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.7
-// @description  抖音PC端视频放大工具（支持所有视频）
+// @version      0.0.8
+// @description  抖音PC端视频放大工具（支持所有视频，修复直播时画面伸缩问题）
 // @author       spl
 // @match        https://*.douyin.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
@@ -163,6 +163,9 @@
             // 样式保护器
             this.styleProtector = null;
             this._pauseHandler = null;
+            // 状态标志
+            this._isApplyingStyle = false;
+            this._isStyleProtecting = false;
             // 容器事件监听器引用
             this._mousedownHandler = null;
             this._mouseenterHandler = null;
@@ -217,29 +220,46 @@
                         return;
                     }
                     this._isApplyingStyle = true;
+                    this._isStyleProtecting = true;
+                    // 临时禁用过渡效果，避免视觉抖动
+                    const originalTransition = video.style.transition;
+                    video.style.transition = 'none';
                     this.applyEnlargement(video);
-                    // 使用setTimeout确保样式应用完成后再清除标志
-                    setTimeout(() => {
+                    // 使用requestAnimationFrame确保样式应用完成后再清除标志
+                    requestAnimationFrame(() => {
                         this._isApplyingStyle = false;
-                    }, 0);
+                        this._isStyleProtecting = false;
+                        // 恢复原始过渡效果
+                        if (!this.isDragging) {
+                            video.style.transition = originalTransition;
+                        }
+                    });
                 }
             };
 
             // 精确检测transform中的scale值是否被修改
             const isScaleModified = (currentTransform) => {
-                if (!currentTransform) {
+                if (!currentTransform || currentTransform.trim() === '') {
                     return true;
                 }
-                // 提取scale值
+                // 提取scale值，支持scale(2)和scale(2, 2)格式
                 const scaleMatch = currentTransform.match(/scale\(([^)]+)\)/);
                 if (!scaleMatch) {
                     return true;
                 }
-                const currentScale = parseFloat(scaleMatch[1]);
+                // 处理可能的多个值（如scale(2, 2)）
+                const scaleValues = scaleMatch[1].split(',').map(val => parseFloat(val.trim()));
+                const currentScale = scaleValues[0]; // 使用第一个值
+                if (isNaN(currentScale)) {
+                    return true;
+                }
                 return Math.abs(currentScale - this.scale) > 0.01;
             };
 
-            // 创建新的 MutationObserver 监听更多变化
+            // 检测是否为直播页面
+            const isLive = this.isLivePage();
+            
+            // 创建新的 MutationObserver 监听变化
             this.styleProtector = new MutationObserver((mutations) => {
                 // 检查是否有影响放大效果的变化
                 const needReapply = mutations.some(mutation => {
@@ -254,58 +274,22 @@
                         const parentTransform = video.parentElement.style.transform;
                         return parentTransform && (parentTransform.includes('scale') || parentTransform.includes('translate'));
                     }
-                    // 检查父元素的class变化
-                    if (mutation.type === 'attributes' && mutation.attributeName === 'class' && mutation.target === video.parentElement) {
-                        // 只在class变化可能影响视频布局时才重新应用
-                        const className = video.parentElement.className;
-                        return className.includes('fullscreen') || className.includes('paused') || className.includes('playing');
-                    }
-                    // 检查祖先元素的变化，抖音可能通过修改祖先元素影响视频
-                    if (mutation.type === 'attributes' && (mutation.attributeName === 'style' || mutation.attributeName === 'class')) {
-                        // 检查是否是视频的祖先元素
-                        let ancestor = mutation.target;
-                        while (ancestor && ancestor !== document.body) {
-                            if (ancestor.contains(video)) {
-                                // 检查祖先元素的class是否包含可能影响视频的类名
-                                if (ancestor.className && (ancestor.className.includes('video') || ancestor.className.includes('player') || ancestor.className.includes('container'))) {
-                                    return true;
-                                }
-                                // 检查祖先元素的style是否包含transform
-                                if (ancestor.style.transform && (ancestor.style.transform.includes('scale') || ancestor.style.transform.includes('translate'))) {
-                                    return true;
-                                }
-                                break;
-                            }
-                            ancestor = ancestor.parentElement;
-                        }
-                    }
-                    // 检查是否有新元素添加到视频容器中，抖音可能添加暂停覆盖层
-                    if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                        // 检查是否是视频的祖先元素添加了新节点
-                        let ancestor = mutation.target;
-                        while (ancestor && ancestor !== document.body) {
-                            if (ancestor.contains(video)) {
-                                return true;
-                            }
-                            ancestor = ancestor.parentElement;
-                        }
+                    // 直播页面需要更严格的检测
+                    if (isLive && mutation.type === 'attributes' && mutation.attributeName === 'class' && mutation.target === video.parentElement) {
+                        // 直播页面中任何class变化都可能影响视频
+                        return true;
                     }
                     return false;
                 });
                 
                 if (needReapply) {
-                    // 减少防抖动时间，确保更及时地响应样式变化
-                    if (this._styleUpdateTimeout) {
-                        clearTimeout(this._styleUpdateTimeout);
+                    // 直接使用requestAnimationFrame，移除setTimeout延迟
+                    if (!this._styleUpdateFrameId) {
+                        this._styleUpdateFrameId = requestAnimationFrame(() => {
+                            applyEnlargementSafe();
+                            this._styleUpdateFrameId = null;
+                        });
                     }
-                    this._styleUpdateTimeout = setTimeout(() => {
-                        if (!this._styleUpdateFrameId) {
-                            this._styleUpdateFrameId = requestAnimationFrame(() => {
-                                applyEnlargementSafe();
-                                this._styleUpdateFrameId = null;
-                            });
-                        }
-                    }, 10); // 10ms防抖动，减少用户看到放大效果消失的瞬间
                 }
             });
 
@@ -339,20 +323,10 @@
                     saveCurrentState();
                     // 立即重新应用放大效果，确保空格键暂停时放大倍数不会被取消
                     applyEnlargementSafe();
-                    // 添加一个小延迟，确保抖音的暂停处理完成后再次应用
-                    setTimeout(applyEnlargementSafe, 30);
-                    // 添加延迟的一次性检查，确保视频暂停后放大效果不会丢失
-                    if (this._pauseCheckTimeout) {
-                        clearTimeout(this._pauseCheckTimeout);
-                    }
-                    this._pauseCheckTimeout = setTimeout(() => {
-                        if (this.enabled && video === this.currentVideo) {
-                            const currentTransform = video.style.transform;
-                            if (isScaleModified(currentTransform)) {
-                                applyEnlargementSafe();
-                            }
-                        }
-                    }, 200); // 200ms延迟检查，减少用户看到放大效果消失的瞬间
+                    // 使用requestAnimationFrame确保抖音的暂停处理完成后再次应用
+                    requestAnimationFrame(() => {
+                        applyEnlargementSafe();
+                    });
                 };
             }
             // 使用捕获阶段的事件监听器，确保我们的处理在抖音之前执行
@@ -369,8 +343,10 @@
                     }
                     // 添加立即重新应用放大效果，确保视频恢复播放时放大效果也能恢复
                     applyEnlargementSafe();
-                    // 添加一个延迟，确保抖音的播放处理完成后再次应用
-                    setTimeout(applyEnlargementSafe, 30);
+                    // 使用requestAnimationFrame确保抖音的播放处理完成后再次应用
+                    requestAnimationFrame(() => {
+                        applyEnlargementSafe();
+                    });
                 };
             }
             // 使用捕获阶段的事件监听器，确保我们的处理在抖音之前执行
@@ -405,7 +381,10 @@
             if (!this._seekedHandler) {
                 this._seekedHandler = () => {
                     applyEnlargementSafe();
-                    setTimeout(applyEnlargementSafe, 30);
+                    // 使用requestAnimationFrame确保抖音的播放处理完成后再次应用
+                    requestAnimationFrame(() => {
+                        applyEnlargementSafe();
+                    });
                 };
             }
             video.addEventListener('seeked', this._seekedHandler);
@@ -464,10 +443,13 @@
 
             // 使用transform进行缩放和位移
             const currentStyle = video.getAttribute('style') || '';
+            // 只在用户主动操作时使用过渡效果
+            const useTransition = this.isDragging ? 'none' : 
+                                  (this._isStyleProtecting ? 'none' : 'transform 0.3s ease');
             const newStyle = this.mergeStyles(currentStyle, {
                 transform: `scale(${this.scale}) translate(${this.translateX}px, ${this.translateY}px)`,
                 transformOrigin: 'center center',
-                transition: this.isDragging ? 'none' : 'transform 0.3s ease'
+                transition: useTransition
             });
 
             video.setAttribute('style', newStyle);
@@ -840,6 +822,18 @@
                     }, { once: true });
                 }
             }
+        }
+
+        // 检测是否为直播页面
+        isLivePage() {
+            // 检查URL是否包含直播相关关键字
+            const url = window.location.href;
+            if (url.includes('/live/') || url.includes('live.douyin.com')) {
+                return true;
+            }
+            // 检查页面是否包含直播相关元素
+            const liveElements = document.querySelectorAll('[class*="live"], [id*="live"], [data-e2e*="live"]');
+            return liveElements.length > 0;
         }
 
         // 初始化
