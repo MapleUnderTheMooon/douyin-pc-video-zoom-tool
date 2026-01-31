@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.9
+// @version      0.0.10
 // @description  抖音PC端视频放大工具（支持所有视频，修复直播时画面伸缩问题）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -441,6 +441,8 @@
                     if (e.key === ' ' || e.keyCode === 32) {
                         // 防止默认行为（如页面滚动）
                         e.preventDefault();
+                        // 阻止事件冒泡，防止浏览器默认点击行为与脚本冲突
+                        e.stopPropagation();
                         // 如果有当前视频元素，触发点击事件
                         if (this.currentVideo) {
                             this.currentVideo.click();
