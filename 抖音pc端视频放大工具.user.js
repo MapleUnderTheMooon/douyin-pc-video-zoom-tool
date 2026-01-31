@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.8
+// @version      0.0.9
 // @description  抖音PC端视频放大工具（支持所有视频，修复直播时画面伸缩问题）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -170,6 +170,8 @@
             this._mousedownHandler = null;
             this._mouseenterHandler = null;
             this._mouseleaveHandler = null;
+            // 空格键事件监听器引用
+            this._keydownHandler = null;
         }
 
         // 设置样式保护器，防止抖音暂停时清除放大效果
@@ -417,9 +419,43 @@
             if (this.currentVideo) {
                 if (enabled) {
                     this.applyEnlargement(this.currentVideo);
+                    // 添加空格键事件监听器
+                    this._addSpaceKeyListener();
                 } else {
                     this.removeEnlargement(this.currentVideo);
+                    // 移除空格键事件监听器
+                    this._removeSpaceKeyListener();
                 }
+            }
+        }
+
+        // 添加空格键事件监听器
+        _addSpaceKeyListener() {
+            if (!this._keydownHandler) {
+                this._keydownHandler = (e) => {
+                    // 只有在放大功能启用时才响应
+                    if (!this.enabled) {
+                        return;
+                    }
+                    // 检查是否为空格键
+                    if (e.key === ' ' || e.keyCode === 32) {
+                        // 防止默认行为（如页面滚动）
+                        e.preventDefault();
+                        // 如果有当前视频元素，触发点击事件
+                        if (this.currentVideo) {
+                            this.currentVideo.click();
+                        }
+                    }
+                };
+                document.addEventListener('keydown', this._keydownHandler, true);
+            }
+        }
+
+        // 移除空格键事件监听器
+        _removeSpaceKeyListener() {
+            if (this._keydownHandler) {
+                document.removeEventListener('keydown', this._keydownHandler, true);
+                this._keydownHandler = null;
             }
         }
 
@@ -621,6 +657,12 @@
             if (this._globalMouseUpHandler) {
                 document.removeEventListener('mouseup', this._globalMouseUpHandler);
                 this._globalMouseUpHandler = null;
+            }
+            
+            // 清理空格键事件监听器
+            if (this._keydownHandler) {
+                document.removeEventListener('keydown', this._keydownHandler, true);
+                this._keydownHandler = null;
             }
             
             // 清理动画帧
