@@ -127,6 +127,11 @@ A:
 
 ## 更新日志
 
+### v0.0.12
+- ✅ 修正脚本URL格式
+- ✅ 更新@updateURL和@downloadURL为正确的raw.githubusercontent.com域名格式
+- ✅ 移除URL中的/raw/refs/heads路径，使用正确的路径格式
+
 ### v0.0.11
 - ✅ 添加自动更新功能
 - ✅ 配置@updateURL和@downloadURL标签

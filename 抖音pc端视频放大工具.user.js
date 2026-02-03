@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.11
+// @version      0.0.12
 // @description  抖音PC端视频放大工具（支持所有视频，修复直播时画面伸缩问题）
 // @author       spl
 // @match        https://*.douyin.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @updateURL    https://github.com/MapleUnderTheMooon/douyin-pc-video-zoom-tool/raw/refs/heads/main/%E6%8A%96%E9%9F%B3pc%E7%AB%AF%E8%A7%86%E9%A2%91%E6%94%BE%E5%A4%A7%E5%B7%A5%E5%85%B7.user.js
-// @downloadURL  https://github.com/MapleUnderTheMooon/douyin-pc-video-zoom-tool/raw/refs/heads/main/%E6%8A%96%E9%9F%B3pc%E7%AB%AF%E8%A7%86%E9%A2%91%E6%94%BE%E5%A4%A7%E5%B7%A5%E5%85%B7.user.js
+// @updateURL    https://raw.githubusercontent.com/MapleUnderTheMooon/douyin-pc-video-zoom-tool/main/%E6%8A%96%E9%9F%B3pc%E7%AB%AF%E8%A7%86%E9%A2%91%E6%94%BE%E5%A4%A7%E5%B7%A5%E5%85%B7.user.js
+// @downloadURL  https://raw.githubusercontent.com/MapleUnderTheMooon/douyin-pc-video-zoom-tool/main/%E6%8A%96%E9%9F%B3pc%E7%AB%AF%E8%A7%86%E9%A2%91%E6%94%BE%E5%A4%A7%E5%B7%A5%E5%85%B7.user.js
 // ==/UserScript==
 
 (function() {
