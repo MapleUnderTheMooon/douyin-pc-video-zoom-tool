@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.12
+// @version      0.0.13
 // @description  抖音PC端视频放大工具（支持所有视频，修复直播时画面伸缩问题）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -174,6 +174,8 @@
             this._mouseleaveHandler = null;
             // 空格键事件监听器引用
             this._keydownHandler = null;
+            // 持续检查定时器
+            this._enlargementCheckInterval = null;
         }
 
         // 设置样式保护器，防止抖音暂停时清除放大效果
@@ -423,10 +425,14 @@
                     this.applyEnlargement(this.currentVideo);
                     // 添加空格键事件监听器
                     this._addSpaceKeyListener();
+                    // 启动持续检查定时器
+                    this._startEnlargementCheck();
                 } else {
                     this.removeEnlargement(this.currentVideo);
                     // 移除空格键事件监听器
                     this._removeSpaceKeyListener();
+                    // 清除持续检查定时器
+                    this._stopEnlargementCheck();
                 }
             }
         }
@@ -692,6 +698,12 @@
                 this._pauseCheckTimeout = null;
             }
             
+            // 清理持续检查定时器
+            if (this._enlargementCheckInterval) {
+                clearInterval(this._enlargementCheckInterval);
+                this._enlargementCheckInterval = null;
+            }
+            
             // 清理容器事件监听器引用
             this._mousedownHandler = null;
             this._mouseenterHandler = null;
@@ -862,9 +874,13 @@
                 // 等待视频元数据加载完成
                 if (video.readyState >= 1) {
                     this.applyEnlargement(video);
+                    // 重新启动持续检查定时器
+                    this._startEnlargementCheck();
                 } else {
                     video.addEventListener('loadedmetadata', () => {
                         this.applyEnlargement(video);
+                        // 重新启动持续检查定时器
+                        this._startEnlargementCheck();
                     }, { once: true });
                 }
             }
@@ -880,6 +896,62 @@
             // 检查页面是否包含直播相关元素
             const liveElements = document.querySelectorAll('[class*="live"], [id*="live"], [data-e2e*="live"]');
             return liveElements.length > 0;
+        }
+
+        // 检查放大状态并恢复
+        _checkEnlargement() {
+            if (!this.currentVideo || !this.enabled) {
+                return;
+            }
+
+            const currentTransform = this.currentVideo.style.transform;
+            // 提取scale值，支持scale(2)和scale(2, 2)格式
+            const scaleMatch = currentTransform.match(/scale\(([^)]+)\)/);
+            let currentScale = 1;
+            if (scaleMatch) {
+                const scaleValues = scaleMatch[1].split(',').map(val => parseFloat(val.trim()));
+                currentScale = scaleValues[0]; // 使用第一个值
+            }
+
+            // 如果放大效果被清除，重新应用
+            if (Math.abs(currentScale - this.scale) > 0.01) {
+                // 使用applyEnlargementSafe函数来应用放大效果
+                if (!this._isApplyingStyle) {
+                    this._isApplyingStyle = true;
+                    this._isStyleProtecting = true;
+                    // 临时禁用过渡效果，避免视觉抖动
+                    const originalTransition = this.currentVideo.style.transition;
+                    this.currentVideo.style.transition = 'none';
+                    this.applyEnlargement(this.currentVideo);
+                    // 使用requestAnimationFrame确保样式应用完成后再清除标志
+                    requestAnimationFrame(() => {
+                        this._isApplyingStyle = false;
+                        this._isStyleProtecting = false;
+                        // 恢复原始过渡效果
+                        if (!this.isDragging) {
+                            this.currentVideo.style.transition = originalTransition;
+                        }
+                    });
+                }
+            }
+        }
+
+        // 启动持续检查定时器
+        _startEnlargementCheck() {
+            // 先清除现有的定时器（如果存在）
+            this._stopEnlargementCheck();
+            // 每200毫秒检查一次，确保及时恢复放大效果
+            this._enlargementCheckInterval = setInterval(() => {
+                this._checkEnlargement();
+            }, 200);
+        }
+
+        // 停止持续检查定时器
+        _stopEnlargementCheck() {
+            if (this._enlargementCheckInterval) {
+                clearInterval(this._enlargementCheckInterval);
+                this._enlargementCheckInterval = null;
+            }
         }
 
         // 初始化
