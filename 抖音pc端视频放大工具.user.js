@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.14
+// @version      0.1.0
 // @description  抖音PC端视频放大工具（支持所有视频，修复直播时画面伸缩问题）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -1304,10 +1304,11 @@
                 if (e.key === 'F' || e.key === 'f') {
                     if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
                         e.preventDefault();
+                        e.stopPropagation();
                         this.toggleButtonVisibility();
                     }
                 }
-            });
+            }, true);
         }
     }
 
