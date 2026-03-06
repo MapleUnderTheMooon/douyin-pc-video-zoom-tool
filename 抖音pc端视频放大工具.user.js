@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.0.13
+// @version      0.0.14
 // @description  抖音PC端视频放大工具（支持所有视频，修复直播时画面伸缩问题）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -201,6 +201,8 @@
                     this._addSpaceKeyListener();
                     // 启动持续检查定时器
                     this._startEnlargementCheck();
+                    // 添加暂停事件监听器
+                    this._addPauseListener(this.currentVideo);
                 } else {
                     this.removeEnlargement(this.currentVideo);
                     // 移除空格键事件监听器
@@ -647,14 +649,42 @@
                     this.applyEnlargement(video);
                     // 重新启动持续检查定时器
                     this._startEnlargementCheck();
+                    // 添加暂停事件监听器
+                    this._addPauseListener(video);
                 } else {
                     video.addEventListener('loadedmetadata', () => {
                         this.applyEnlargement(video);
                         // 重新启动持续检查定时器
                         this._startEnlargementCheck();
+                        // 添加暂停事件监听器
+                        this._addPauseListener(video);
                     }, { once: true });
                 }
             }
+        }
+
+        // 添加暂停事件监听器
+        _addPauseListener(video) {
+            if (!video) {
+                return;
+            }
+
+            // 清理旧的监听器
+            if (this._pauseHandler) {
+                video.removeEventListener('pause', this._pauseHandler, true);
+                this._pauseHandler = null;
+            }
+
+            // 创建新的暂停事件监听器
+            this._pauseHandler = (e) => {
+                if (e.target === video && this.enabled) {
+                    // 视频暂停时检查并恢复放大效果
+                    this._checkEnlargement();
+                }
+            };
+
+            // 添加暂停事件监听器
+            video.addEventListener('pause', this._pauseHandler, true);
         }
 
         // 检测是否为直播页面
