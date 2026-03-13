@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.1.0
+// @version      0.1.1
 // @description  抖音PC端视频放大工具（支持所有视频，修复直播时画面伸缩问题）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -678,8 +678,8 @@
             // 创建新的暂停事件监听器
             this._pauseHandler = (e) => {
                 if (e.target === video && this.enabled) {
-                    // 视频暂停时检查并恢复放大效果
-                    this._checkEnlargement();
+                    // 视频暂停时持续检查并恢复放大效果
+                    this._startEnlargementCheck();
                 }
             };
 
