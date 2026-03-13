@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音pc端视频放大工具
 // @namespace    http://tampermonkey.net/
-// @version      0.1.1
+// @version      0.2.0
 // @description  抖音PC端视频放大工具（支持所有视频，修复直播时画面伸缩问题）
 // @author       spl
 // @match        https://*.douyin.com/*
@@ -164,6 +164,7 @@
             this.dragStartY = 0;
             // 样式保护器
             this.styleProtector = null;
+            this.styleObserver = null;
             this._pauseHandler = null;
             // 状态标志
             this._isApplyingStyle = false;
@@ -291,6 +292,60 @@
                 });
                 container.setAttribute('style', newContainerStyle);
             }
+
+            // 为直播视频添加样式监听器
+            if (this.isLivePage()) {
+                this._addStyleObserver(video);
+            }
+        }
+
+        // 添加样式变化监听器
+        _addStyleObserver(video) {
+            if (this.styleObserver) {
+                this.styleObserver.disconnect();
+            }
+
+            // 创建MutationObserver来监听样式变化
+            this.styleObserver = new MutationObserver((mutations) => {
+                mutations.forEach((mutation) => {
+                    if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
+                        // 样式发生变化，检查是否需要恢复放大效果
+                        if (this.enabled && this.currentVideo === video) {
+                            const currentTransform = video.style.transform;
+                            const scaleMatch = currentTransform.match(/scale\(([^)]+)\)/);
+                            let currentScale = 1;
+                            if (scaleMatch) {
+                                const scaleValues = scaleMatch[1].split(',').map(val => parseFloat(val.trim()));
+                                currentScale = scaleValues[0];
+                            }
+
+                            // 如果放大效果被清除，立即恢复
+                            if (Math.abs(currentScale - this.scale) > 0.01) {
+                                if (!this._isApplyingStyle) {
+                                    this._isApplyingStyle = true;
+                                    this._isStyleProtecting = true;
+                                    const originalTransition = video.style.transition;
+                                    video.style.transition = 'none';
+                                    this.applyEnlargement(video);
+                                    requestAnimationFrame(() => {
+                                        this._isApplyingStyle = false;
+                                        this._isStyleProtecting = false;
+                                        if (!this.isDragging) {
+                                            video.style.transition = originalTransition;
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+
+            // 开始观察视频元素的属性变化
+            this.styleObserver.observe(video, {
+                attributes: true,
+                attributeFilter: ['style']
+            });
         }
 
         // 移除放大效果
@@ -307,6 +362,13 @@
                 this.styleProtector.disconnect();
                 this.styleProtector = null;
             }
+            
+            // 清理样式监听器
+            if (this.styleObserver) {
+                this.styleObserver.disconnect();
+                this.styleObserver = null;
+            }
+            
             if (this._pauseHandler) {
                 video.removeEventListener('pause', this._pauseHandler, true);
                 this._pauseHandler = null;
@@ -387,6 +449,12 @@
             if (this.styleProtector) {
                 this.styleProtector.disconnect();
                 this.styleProtector = null;
+            }
+            
+            // 清理样式监听器
+            if (this.styleObserver) {
+                this.styleObserver.disconnect();
+                this.styleObserver = null;
             }
             
             // 清理视频事件监听器
